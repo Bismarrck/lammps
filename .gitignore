@@ -40,3 +40,7 @@ Thumbs.db
 /Makefile
 /cmake_install.cmake
 /lmp
+/cmake/cmake-build-*
+
+# CLion settings
+.idea/*
