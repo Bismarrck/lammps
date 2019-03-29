@@ -207,6 +207,10 @@ class Pair : protected Pointers {
 
   typedef union {int i; float f;} union_int_float_t;
 
+  // Accessor for the user-intel package to determine virial calc for hybrid
+
+  inline int fdotr_is_set() const { return vflag_fdotr; }
+
  protected:
   int vflag_fdotr;
   int maxeatom,maxvatom;
@@ -214,6 +218,10 @@ class Pair : protected Pointers {
   int copymode;   // if set, do not deallocate during destruction
                   // required when classes are used as functors by Kokkos
 
+  void ev_init(int eflag, int vflag, int alloc = 1) {
+    if (eflag||vflag) ev_setup(eflag, vflag, alloc);
+    else ev_unset();
+  }
   virtual void ev_setup(int, int, int alloc = 1);
   void ev_unset();
   void ev_tally_full(int, double, double, double, double, double, double);
@@ -268,7 +276,7 @@ E: Cannot use pair tail corrections with 2d simulations
 
 The correction factors are only currently defined for 3d systems.
 
-W: Using pair tail corrections with nonperiodic system
+W: Using pair tail corrections with non-periodic system
 
 This is probably a bogus thing to do, since tail corrections are
 computed by integrating the density of a periodic system out to

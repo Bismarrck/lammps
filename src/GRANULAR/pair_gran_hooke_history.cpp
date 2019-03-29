@@ -63,6 +63,8 @@ PairGranHookeHistory::PairGranHookeHistory(LAMMPS *lmp) : Pair(lmp)
 
 PairGranHookeHistory::~PairGranHookeHistory()
 {
+  if (copymode) return;
+
   delete [] svector;
   if (fix_history) modify->delete_fix("NEIGH_HISTORY");
 
@@ -96,8 +98,7 @@ void PairGranHookeHistory::compute(int eflag, int vflag)
   int *touch,**firsttouch;
   double *shear,*allshear,**firstshear;
 
-  if (eflag || vflag) ev_setup(eflag,vflag);
-  else evflag = vflag_fdotr = 0;
+  ev_init(eflag,vflag);
 
   int shearupdate = 1;
   if (update->setupflag) shearupdate = 0;
@@ -587,9 +588,9 @@ void PairGranHookeHistory::reset_dt()
 
 /* ---------------------------------------------------------------------- */
 
-double PairGranHookeHistory::single(int i, int j, int itype, int jtype,
+double PairGranHookeHistory::single(int i, int j, int /*itype*/, int /*jtype*/,
                                     double rsq,
-                                    double factor_coul, double factor_lj,
+                                    double /*factor_coul*/, double /*factor_lj*/,
                                     double &fforce)
 {
   double radi,radj,radsum;
@@ -746,7 +747,7 @@ double PairGranHookeHistory::single(int i, int j, int itype, int jtype,
 /* ---------------------------------------------------------------------- */
 
 int PairGranHookeHistory::pack_forward_comm(int n, int *list, double *buf,
-                                            int pbc_flag, int *pbc)
+                                            int /*pbc_flag*/, int * /*pbc*/)
 {
   int i,j,m;
 

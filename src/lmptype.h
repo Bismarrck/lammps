@@ -46,13 +46,6 @@
 #define PRId64 "ld"
 #endif
 
-// favor qsort over mergesort for stable release
-// TODO: to be removed after stable release
-
-#ifndef LMP_QSORT
-#define LMP_QSORT
-#endif
-
 namespace LAMMPS_NS {
 
 // enum used for KOKKOS host/device flags
@@ -212,5 +205,9 @@ typedef int bigint;
 #ifdef _WIN32
 #include "lmpwindows.h"
 #endif
+
+// suppress unused parameter warning
+
+#define LMP_UNUSED_PARAM(x) (void)(x)
 
 #endif
