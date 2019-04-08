@@ -90,7 +90,7 @@ PairReaxC::PairReaxC(LAMMPS *lmp) : Pair(lmp)
   mpi_data = (mpi_datatypes *)
     memory->smalloc(sizeof(mpi_datatypes),"reax:mpi");
 
-  MPI_Comm_rank(world,&system->my_rank);
+  control->me = system->my_rank = comm->me;
 
   system->my_coords[0] = 0;
   system->my_coords[1] = 0;
@@ -108,6 +108,8 @@ PairReaxC::PairReaxC(LAMMPS *lmp) : Pair(lmp)
   system->bndry_cuts.ghost_cutoff = 0;
   system->my_atoms = NULL;
   system->pair_ptr = this;
+  system->error_ptr = error;
+  control->error_ptr = error;
 
   system->omp_active = 0;
 
@@ -139,10 +141,10 @@ PairReaxC::~PairReaxC()
 
     if (control->tabulate ) Deallocate_Lookup_Tables( system);
 
-    if (control->hbond_cut > 0 )  Delete_List( lists+HBONDS, world);
-    Delete_List( lists+BONDS, world );
-    Delete_List( lists+THREE_BODIES, world );
-    Delete_List( lists+FAR_NBRS, world );
+    if (control->hbond_cut > 0 )  Delete_List( lists+HBONDS );
+    Delete_List( lists+BONDS );
+    Delete_List( lists+THREE_BODIES );
+    Delete_List( lists+FAR_NBRS );
 
     DeAllocate_Workspace( control, workspace );
     DeAllocate_System( system );
@@ -380,6 +382,14 @@ void PairReaxC::init_style( )
     error->all(FLERR,"Pair style reax/c requires atom IDs");
   if (force->newton_pair == 0)
     error->all(FLERR,"Pair style reax/c requires newton pair on");
+  if ((atom->map_tag_max > 99999999) && (comm->me == 0))
+    error->warning(FLERR,"Some Atom-IDs are too large. Pair style reax/c "
+                   "native output files may get misformatted or corrupted");
+
+  // because system->bigN is an int, we cannot have more atoms than MAXSMALLINT
+
+  if (atom->natoms > MAXSMALLINT)
+    error->all(FLERR,"Too many atoms for pair style reax/c");
 
   // need a half neighbor list w/ Newton off and ghost neighbors
   // built whenever re-neighboring occurs
@@ -394,7 +404,8 @@ void PairReaxC::init_style( )
                    "increased neighbor list skin.");
 
   for( int i = 0; i < LIST_N; ++i )
-    lists[i].allocated = 0;
+    if (lists[i].allocated != 1)
+      lists[i].allocated = 0;
 
   if (fix_reax == NULL) {
     char **fixarg = new char*[3];
@@ -436,13 +447,14 @@ void PairReaxC::setup( )
 
     // initialize my data structures
 
-    PreAllocate_Space( system, control, workspace, world );
+    PreAllocate_Space( system, control, workspace );
     write_reax_atoms();
 
     int num_nbrs = estimate_reax_lists();
     if(!Make_List(system->total_cap, num_nbrs, TYP_FAR_NEIGHBOR,
-                  lists+FAR_NBRS, world))
-      error->all(FLERR,"Pair reax/c problem in far neighbor list");
+                  lists+FAR_NBRS))
+      error->one(FLERR,"Pair reax/c problem in far neighbor list");
+    (lists+FAR_NBRS)->error_ptr=error;
 
     write_reax_lists();
     Initialize( system, control, data, workspace, &lists, out_control,
@@ -465,7 +477,7 @@ void PairReaxC::setup( )
 
     // check if I need to shrink/extend my data-structs
 
-    ReAllocate( system, control, data, workspace, &lists, mpi_data );
+    ReAllocate( system, control, data, workspace, &lists );
   }
 
   bigint local_ngroup = list->inum;
@@ -516,7 +528,7 @@ void PairReaxC::compute(int eflag, int vflag)
 
   setup();
 
-  Reset( system, control, data, workspace, &lists, world );
+  Reset( system, control, data, workspace, &lists );
   workspace->realloc.num_far = write_reax_lists();
   // timing for filling in the reax lists
   if (comm->me == 0) {
