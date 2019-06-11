@@ -196,6 +196,10 @@ void PairReaxCOMP::compute(int eflag, int vflag)
   if (vflag_global) control->virial = 1;
   else control->virial = 0;
 
+  if (vflag_atom)
+     error->all(FLERR,"Pair style reax/c/omp does not support "
+                "computing per-atom stress");
+
   system->n = atom->nlocal; // my atoms
   system->N = atom->nlocal + atom->nghost; // mine + ghosts
   system->bigN = static_cast<int> (atom->natoms);  // all atoms in the system
@@ -369,7 +373,7 @@ void PairReaxCOMP::init_style( )
 
   if (fix_reax == NULL) {
     char **fixarg = new char*[3];
-    fixarg[0] = (char *) "REAXC";
+    fixarg[0] = (char *) fix_id;
     fixarg[1] = (char *) "all";
     fixarg[2] = (char *) "REAXC";
     modify->add_fix(3,fixarg);
@@ -639,4 +643,3 @@ void PairReaxCOMP::FindBond()
     }
   }
 }
-
