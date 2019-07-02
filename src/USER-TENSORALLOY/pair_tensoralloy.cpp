@@ -77,6 +77,17 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     force->newton_pair = 0;
     force->newton = 0;
 
+    rc = 0.0;
+    cutforcesq = 0.0;
+    use_angular = false;
+    n_eta = 0;
+    n_omega = 0;
+    n_beta = 0;
+    n_gamma = 0;
+    n_zeta = 0;
+
+    element_map = nullptr;
+    max_occurs = nullptr;
     vap = nullptr;
 
     nmax = 0;
@@ -534,7 +545,7 @@ void PairTensorAlloy::settings(int narg, char **/*arg*/)
 
 // Reads a model graph definition from disk, and creates a session object you
 // can use to run it.
-Status LoadGraph(string graph_file_name,
+Status LoadGraph(const string &graph_file_name,
                  tensorflow::Session **session) {
     tensorflow::GraphDef graph_def;
     Status load_graph_status =
@@ -552,13 +563,29 @@ Status LoadGraph(string graph_file_name,
 
 void PairTensorAlloy::coeff(int narg, char **arg)
 {
-    int i,j;
+    int i, j, n_elements;
+    std::vector<string> lmp_atom_types;
 
-    if (!allocated) allocate();
+    if (!allocated) {
+        allocate();
+    }
 
     // Format: [graph_model_path] [element1] [element2] ...
     if (narg != 1 + atom->ntypes)
         error->all(FLERR,"Incorrect args for pair coefficients");
+
+    // Read Lammps element order
+    std::cout << "Lammps atom types: ";
+    for (i = 1; i < narg; i++) {
+        string element = string(arg[i]);
+        std::cout << element << " ";
+        lmp_atom_types.emplace_back(element);
+    }
+    std::cout << std::endl;
+    memory->create(element_map, lmp_atom_types.size() + 1, "pair:element_map");
+    for (i = 0; i < lmp_atom_types.size() + 1; i++) {
+        element_map[i] = 0;
+    }
 
     // Initialize the session
     tensorflow::SessionOptions options;
@@ -567,12 +594,12 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     // Load the graph model
     string graph_model_path(arg[0]);
     Status load_graph_status = LoadGraph(graph_model_path, &session);
-    LOG(INFO) << "Read " << graph_model_path << ": " << load_graph_status;
+    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
 
     // Decode the transformer
     std::vector<Tensor> outputs;
     status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
-    LOG(INFO) << "Recover model metadata: " << status;
+    std::cout << "Recover model metadata: " << status << std::endl;
 
     Json::Value jsonData;
     Json::Reader jsonReader;
@@ -581,9 +608,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
 
     if (parse_status)
     {
-        std::cout << "Successfully parsed JSON data" << std::endl;
-        std::cout << "\nJSON data received:" << std::endl;
-        std::cout << jsonData.toStyledString() << std::endl;
+        std::cout << "Successfully parsed tensor <Transformer/params:0>" << std::endl;
 
         rc = jsonData["rc"].asDouble();
         use_angular = jsonData["angular"].asBool();
@@ -593,6 +618,21 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         n_gamma = jsonData["gamma"].size();
         n_zeta = jsonData["zeta"].size();
 
+        Json::Value model_elements = jsonData["elements"];
+        n_elements = model_elements.size();
+
+        std::cout << "Graph model elements: ";
+        for (i = 0; i < n_elements; i++) {
+            std::cout << model_elements[i].asString() << " ";
+        }
+        std::cout << std::endl;
+
+        for (i = 0; i < lmp_atom_types.size(); i++) {
+            if (lmp_atom_types[i] != model_elements[i].asString()) {
+                error->all(FLERR, "Elements misorder.");
+            }
+        }
+
         std::cout << "rc: " << std::setprecision(3) << rc << std::endl;
         std::cout << "angular: " << use_angular << std::endl;
         std::cout << "n_eta: " << n_eta << std::endl;
@@ -600,63 +640,28 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         std::cout << "n_beta: " << n_beta << std::endl;
         std::cout << "n_gamma: " << n_gamma << std::endl;
         std::cout << "n_zeta: " << n_zeta << std::endl;
+        std::cout << "map: ";
+        for (i = 1; i < lmp_atom_types.size() + 1; i++) {
+            std::cout << i << "->" << element_map[i] << " ";
+        }
+        std::cout << std::endl;
     }
     else
     {
-        std::cout << "Could not decode internal tensor <Transformer/params:0>." << std::endl;
-        abort();
+        n_elements = 0;
+        error->all(FLERR, "Could not decode tensor <Transformer/params:0>");
     }
 
-    if (setfl) {
-        for (i = 0; i < setfl->nelements; i++) delete [] setfl->elements[i];
-        delete [] setfl->elements;
-        delete [] setfl->mass;
-        memory->destroy(setfl->frho);
-        memory->destroy(setfl->rhor);
-        memory->destroy(setfl->z2r);
-        memory->destroy(setfl->u2r);
-        memory->destroy(setfl->w2r);
-        delete setfl;
-    }
-    setfl = new Setfl();
-    read_file(arg[2]);
+    memory->create(max_occurs, n_elements, "pair:max_occurs");
+    for (i = 0; i < n_elements; i++)
+        max_occurs[i] = 0;
+    for (i = 0; i < atom->natoms; i++)
+        max_occurs[atom->type[i] - 1] ++;
+    for (i = 0; i < n_elements; i++)
+        std::cout << "MaxOccur of " << lmp_atom_types[i] << ": " << max_occurs[i] << std::endl;
 
-    // read args that map atom types to elements in potential file
-    // map[i] = which element the Ith atom type is, -1 if NULL
-
-    for (i = 3; i < narg; i++) {
-        if (strcmp(arg[i],"NULL") == 0) {
-            map[i-2] = -1;
-            continue;
-        }
-        for (j = 0; j < setfl->nelements; j++)
-            if (strcmp(arg[i],setfl->elements[j]) == 0) break;
-        if (j < setfl->nelements) map[i-2] = j;
-        else error->all(FLERR,"No matching element in ADP potential file");
-    }
-
-    // clear setflag since coeff() called once with I,J = * *
-
-    int n = atom->ntypes;
-    for (i = 1; i <= n; i++)
-        for (j = i; j <= n; j++)
-            setflag[i][j] = 0;
-
-    // set setflag i,j for type pairs where both are mapped to elements
-    // set mass of atom type if i = j
-
-    int count = 0;
-    for (i = 1; i <= n; i++) {
-        for (j = i; j <= n; j++) {
-            if (map[i] >= 0 && map[j] >= 0) {
-                setflag[i][j] = 1;
-                if (i == j) atom->set_mass(FLERR,i,setfl->mass[map[i]]);
-                count++;
-            }
-        }
-    }
-
-    if (count == 0) error->all(FLERR,"Incorrect args for pair coefficients");
+    vap = new VirtualAtomMap(memory, n_elements, max_occurs, atom->natoms, atom->type);
+    vap->print();
 }
 
 

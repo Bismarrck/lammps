@@ -39,7 +39,8 @@ namespace LAMMPS_NS {
     protected:
 
         // Virtual-Atom Approach
-        int *sorted_elements;
+        int *element_map;
+        int *max_occurs;
         bool use_angular;
         int n_eta;
         int n_omega;

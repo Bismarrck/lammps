@@ -12,19 +12,16 @@ namespace LAMMPS_NS {
 
     class VirtualAtomMap {
     public:
-
-        VirtualAtomMap(Memory *, int, int *, int, int *);
-
+        VirtualAtomMap();
+        VirtualAtomMap(Memory *, int, const int *, int, int *);
         ~VirtualAtomMap();
 
         void print();
-
         double memory_usage();
 
     private:
         // Variables from outside
         int _n_elements;
-        int *_max_occurs;
         int _inum;
         int *_itypes;
 

@@ -12,8 +12,28 @@ using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
 
+VirtualAtomMap::VirtualAtomMap()
+{
+    _n_elements = 0;
+    _inum = 0;
+
+    n_atoms_vap = 0;
+
+    _itypes = nullptr;
+    _memory = nullptr;
+
+    mask = nullptr;
+    element_map = nullptr;
+    offsets = nullptr;
+    index_map = nullptr;
+    reverse_map = nullptr;
+    splits = nullptr;
+}
+
+/* ---------------------------------------------------------------------- */
+
 VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
-                               int *max_occurs, int inum, int *itypes)
+                               const int *max_occurs, int inum, int *itypes)
 {
     int i = 0;
     int i_old = 0;
@@ -29,7 +49,6 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
     splits = nullptr;
 
     _n_elements = n_elements;
-    _max_occurs = max_occurs;
     _itypes = itypes;
     _inum = inum;
     _memory = memory;
