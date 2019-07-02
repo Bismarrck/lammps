@@ -35,6 +35,7 @@
 #include "memory.h"
 #include "error.h"
 #include "utils.h"
+#include "tensorflow/cc/client/client_session.h"
 
 using namespace LAMMPS_NS;
 
@@ -125,7 +126,7 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
 
 /* ---------------------------------------------------------------------- */
 
-void print_int_array(std::string title, int *array, int num, int max_per_line)
+void print_int_array(const std::string& title, const int *array, const int num, int max_per_line)
 {
     max_per_line = MAX(max_per_line, 1);
 
