@@ -26,7 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include "pair_behler.h"
+#include "pair_tensoralloy.h"
 #include "atom.h"
 #include "force.h"
 #include "comm.h"
