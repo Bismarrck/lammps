@@ -953,13 +953,20 @@ endforeach()
 
 if(PKG_USER-TENSORALLOY)
   pkg_depends(USER-TENSORALLOY MANYBODY)
+
+  set(TensorflowCC_DIR $ENV{LIBTENSORFLOW_CMAKE_DIR})
+  find_package(TensorflowCC REQUIRED)
+
   set(USER-TENSORALLOY_SOURCES_DIR ${LAMMPS_SOURCE_DIR}/USER-TENSORALLOY)
   set(USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/pair_behler.cpp)
-  list(APPEND LIB_SOURCES ${USER-TENSORALLOY_SOURCES})
+
   include_directories(${USER-TENSORALLOY_SOURCES_DIR})
   RegisterStyles(${USER-TENSORALLOY_SOURCES_DIR})
   RegisterPackages(${USER-TENSORALLOY_SOURCES_DIR})
-  list(APPEND DEFAULT_PACKAGES USER-TENSORALLOY)
+
+  add_library(libtensoralloy STATIC ${USER-TENSORALLOY_SOURCES})
+  target_link_libraries(libtensoralloy TensorflowCC::Shared)
+  list(APPEND LAMMPS_LINK_LIBS libtensoralloy)
 endif()
 
 if(PKG_USER-AWPMD)
