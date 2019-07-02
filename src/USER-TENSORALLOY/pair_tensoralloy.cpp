@@ -26,6 +26,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
+#include "jsoncpp/json/json.h"
 #include "pair_tensoralloy.h"
 #include "atom.h"
 #include "force.h"
@@ -35,155 +37,47 @@
 #include "memory.h"
 #include "error.h"
 #include "utils.h"
+
 #include "tensorflow/cc/client/client_session.h"
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/cc/ops/const_op.h"
+#include "tensorflow/cc/ops/image_ops.h"
+#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/graph/default_device.h"
+#include "tensorflow/core/graph/graph_def_builder.h"
+#include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/lib/core/threadpool.h"
+#include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/lib/strings/stringprintf.h"
+#include "tensorflow/core/platform/init_main.h"
+#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/public/session.h"
+#include "tensorflow/core/util/command_line_flags.h"
 
 using namespace LAMMPS_NS;
+
+using tensorflow::Flag;
+using tensorflow::int32;
+using tensorflow::Status;
+using tensorflow::string;
+using tensorflow::Tensor;
+using tensorflow::ops::Placeholder;
 
 #define MAXLINE 1024
 
 /* ---------------------------------------------------------------------- */
 
-#define REAL_ATOM_START 1
-
-
-VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
-        int *max_occurs, int inum, int *itypes)
-{
-    int i = 0;
-    int i_old = 0;
-    int i_ele = 0;
-    int i_gsl = 0;
-    int *delta = nullptr;
-
-    mask = nullptr;
-    element_map = nullptr;
-    offsets = nullptr;
-    index_map = nullptr;
-    reverse_map = nullptr;
-    splits = nullptr;
-
-    _n_elements = n_elements;
-    _max_occurs = max_occurs;
-    _itypes = itypes;
-    _inum = inum;
-    _memory = memory;
-
-    // self.max_vap_n_atoms = sum(max_occurs.values()) + istart
-    n_atoms_vap = REAL_ATOM_START;
-    for (i = 0; i < n_elements; i++) {
-        n_atoms_vap += max_occurs[i];
-    }
-
-    // mask = np.zeros(self.max_vap_n_atoms, dtype=bool)
-    _memory->create(mask, n_atoms_vap, "pair:vap:mask");
-    _memory->create(index_map, inum, "pair:vap:index_map");
-    _memory->create(reverse_map, n_atoms_vap, "pair:vap:reverse_map");
-    _memory->create(offsets, n_elements + 1, "pair:vap:offsets");
-    _memory->create(splits, n_elements + 1, "pair:vap:splits");
-
-    // Initialize `delta` to all zeros.
-    _memory->create(delta, n_elements + 1, "pair:vap:delta");
-    for (i = 0; i < n_elements + 1; i++) {
-        delta[i] = 0;
-    }
-
-    // self.splits = np.array([1, ] + [max_occurs[e] for e in elements])
-    splits[0] = 1;
-    for (i = 1; i < n_elements + 1; i++) {
-        splits[i] = max_occurs[i - 1];
-    }
-
-    // offsets = np.cumsum([max_occurs[e] for e in elements])[:-1]
-    // offsets = np.insert(offsets, 0, 0)
-    offsets[0] = 1;
-    for (i = 1; i < n_elements + 1; i++) {
-        offsets[i] = offsets[i - 1] + max_occurs[i - 1];
-    }
-
-    for (i = 0; i < inum; i++) {
-        i_old = i;
-        // `itypes` is a list and its values ranges from 1 to `inum`.
-        // So we can use its values as indices directly.
-        i_ele = itypes[i];
-        i_gsl = offsets[i_ele - 1] + delta[i_ele];
-        index_map[i_old] = i_gsl;
-        delta[i_ele] += 1;
-        mask[i_gsl] = true;
-    }
-
-    // `delta` is no longer needed.
-    _memory->destroy(delta);
-    delete [] delta;
-
-    // reverse_map = {v: k - 1 for k, v in index_map.items()}
-    for (i = 0; i < n_atoms_vap; i++) {
-        reverse_map[i] = -1;
-    }
-    for (i = 0; i < inum; i++) {
-        reverse_map[index_map[i]] = i;
-    }
-}
-
-/* ---------------------------------------------------------------------- */
-
-void print_int_array(const std::string& title, const int *array, const int num, int max_per_line)
-{
-    max_per_line = MAX(max_per_line, 1);
-
-    std::cout << "* " << title << ":" << std::endl;
-    for (int i = 0; i < num; i++) {
-        std::cout << " " << array[i];
-        if (i && i % max_per_line == 0) {
-            std::cout << std::endl;
-        }
-    }
-    std::cout << std::endl;
-}
-
-void VirtualAtomMap::print()
-{
-    std::cout << "----------------" << std::endl;
-    std::cout << "Virtual-Atom Map" << std::endl;
-    std::cout << "----------------" << std::endl;
-    std::cout << "N_atoms_vap: " << n_atoms_vap << std::endl;
-    print_int_array("Splits", splits, _n_elements + 1, 20);
-    print_int_array("Offsets", offsets, _n_elements + 1, 20);
-    print_int_array("IndexMap", index_map, _inum, 20);
-    print_int_array("ReverseMap", reverse_map, n_atoms_vap, 20);
-    std::cout << std::endl;
-}
-
-/* ---------------------------------------------------------------------- */
-
-// The deallocation method.
-VirtualAtomMap::~VirtualAtomMap()
-{
-    _memory->destroy(element_map);
-    delete [] element_map;
-
-    _memory->destroy(offsets);
-    delete [] offsets;
-
-    _memory->destroy(index_map);
-    delete [] index_map;
-
-    _memory->destroy(splits);
-    delete [] splits;
-
-    _memory->destroy(reverse_map);
-    delete [] reverse_map;
-
-    _memory->destroy(mask);
-    delete [] mask;
-}
-
-/* ---------------------------------------------------------------------- */
-
-PairBehler::PairBehler(LAMMPS *lmp) : Pair(lmp)
+PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 {
     restartinfo = 0;
     force->newton_pair = 0;
     force->newton = 0;
+
+    vap = nullptr;
 
     nmax = 0;
     rho = NULL;
@@ -220,7 +114,7 @@ PairBehler::PairBehler(LAMMPS *lmp) : Pair(lmp)
    check if allocated, since class can be destructed when incomplete
 ------------------------------------------------------------------------- */
 
-PairBehler::~PairBehler()
+PairTensorAlloy::~PairTensorAlloy()
 {
     memory->destroy(rho);
     memory->destroy(fp);
@@ -265,7 +159,7 @@ PairBehler::~PairBehler()
 
 /* ---------------------------------------------------------------------- */
 
-void PairBehler::compute(int eflag, int vflag)
+void PairTensorAlloy::compute(int eflag, int vflag)
 {
     int i,j,ii,jj,m,inum,jnum,itype,jtype;
     double xtmp,ytmp,ztmp,delx,dely,delz,evdwl,fpair;
@@ -602,7 +496,7 @@ void PairBehler::compute(int eflag, int vflag)
    allocate all arrays
 ------------------------------------------------------------------------- */
 
-void PairBehler::allocate()
+void PairTensorAlloy::allocate()
 {
     allocated = 1;
     int n = atom->ntypes;
@@ -628,7 +522,7 @@ void PairBehler::allocate()
    global settings
 ------------------------------------------------------------------------- */
 
-void PairBehler::settings(int narg, char **/*arg*/)
+void PairTensorAlloy::settings(int narg, char **/*arg*/)
 {
     if (narg > 0) error->all(FLERR,"Illegal pair_style command");
 }
@@ -638,21 +532,80 @@ void PairBehler::settings(int narg, char **/*arg*/)
    read concatenated *.plt file
 ------------------------------------------------------------------------- */
 
-void PairBehler::coeff(int narg, char **arg)
+// Reads a model graph definition from disk, and creates a session object you
+// can use to run it.
+Status LoadGraph(string graph_file_name,
+                 tensorflow::Session **session) {
+    tensorflow::GraphDef graph_def;
+    Status load_graph_status =
+            ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
+    if (!load_graph_status.ok()) {
+        return tensorflow::errors::NotFound("Failed to load compute graph at '",
+                                            graph_file_name, "'");
+    }
+    Status session_create_status = (*session)->Create(graph_def);
+    if (!session_create_status.ok()) {
+        return session_create_status;
+    }
+    return Status::OK();
+}
+
+void PairTensorAlloy::coeff(int narg, char **arg)
 {
     int i,j;
 
     if (!allocated) allocate();
 
-    if (narg != 3 + atom->ntypes)
+    // Format: [graph_model_path] [element1] [element2] ...
+    if (narg != 1 + atom->ntypes)
         error->all(FLERR,"Incorrect args for pair coefficients");
 
-    // insure I,J args are * *
+    // Initialize the session
+    tensorflow::SessionOptions options;
+    Status status = tensorflow::NewSession(options, &session);
 
-    if (strcmp(arg[0],"*") != 0 || strcmp(arg[1],"*") != 0)
-        error->all(FLERR,"Incorrect args for pair coefficients");
+    // Load the graph model
+    string graph_model_path(arg[0]);
+    Status load_graph_status = LoadGraph(graph_model_path, &session);
+    LOG(INFO) << "Read " << graph_model_path << ": " << load_graph_status;
 
-    // read ADP parameter file
+    // Decode the transformer
+    std::vector<Tensor> outputs;
+    status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    LOG(INFO) << "Recover model metadata: " << status;
+
+    Json::Value jsonData;
+    Json::Reader jsonReader;
+    auto decoded = outputs[0].flat<string>();
+    auto parse_status = jsonReader.parse(decoded.data()[0], jsonData, false);
+
+    if (parse_status)
+    {
+        std::cout << "Successfully parsed JSON data" << std::endl;
+        std::cout << "\nJSON data received:" << std::endl;
+        std::cout << jsonData.toStyledString() << std::endl;
+
+        rc = jsonData["rc"].asDouble();
+        use_angular = jsonData["angular"].asBool();
+        n_eta = jsonData["eta"].size();
+        n_omega = jsonData["omega"].size();
+        n_beta = jsonData["beta"].size();
+        n_gamma = jsonData["gamma"].size();
+        n_zeta = jsonData["zeta"].size();
+
+        std::cout << "rc: " << std::setprecision(3) << rc << std::endl;
+        std::cout << "angular: " << use_angular << std::endl;
+        std::cout << "n_eta: " << n_eta << std::endl;
+        std::cout << "n_omega: " << n_omega << std::endl;
+        std::cout << "n_beta: " << n_beta << std::endl;
+        std::cout << "n_gamma: " << n_gamma << std::endl;
+        std::cout << "n_zeta: " << n_zeta << std::endl;
+    }
+    else
+    {
+        std::cout << "Could not decode internal tensor <Transformer/params:0>." << std::endl;
+        abort();
+    }
 
     if (setfl) {
         for (i = 0; i < setfl->nelements; i++) delete [] setfl->elements[i];
@@ -711,7 +664,7 @@ void PairBehler::coeff(int narg, char **arg)
    init specific to this pair style
 ------------------------------------------------------------------------- */
 
-void PairBehler::init_style()
+void PairTensorAlloy::init_style()
 {
     // convert read-in file(s) to arrays and spline them
 
@@ -725,7 +678,7 @@ void PairBehler::init_style()
    init for one type pair i,j and corresponding j,i
 ------------------------------------------------------------------------- */
 
-double PairBehler::init_one(int /*i*/, int /*j*/)
+double PairTensorAlloy::init_one(int /*i*/, int /*j*/)
 {
     // single global cutoff = max of cut from all files read in
     // for funcfl could be multiple files
@@ -741,7 +694,7 @@ double PairBehler::init_one(int /*i*/, int /*j*/)
    read potential values from a DYNAMO single element funcfl file
 ------------------------------------------------------------------------- */
 
-void PairBehler::read_file(char *filename)
+void PairTensorAlloy::read_file(char *filename)
 {
     Setfl *file = setfl;
 
@@ -856,7 +809,7 @@ void PairBehler::read_file(char *filename)
    interpolate all file values to a single grid and cutoff
 ------------------------------------------------------------------------- */
 
-void PairBehler::file2array()
+void PairTensorAlloy::file2array()
 {
     int i,j,m,n;
     int ntypes = atom->ntypes;
@@ -1051,7 +1004,7 @@ void PairBehler::file2array()
 
 /* ---------------------------------------------------------------------- */
 
-void PairBehler::array2spline()
+void PairTensorAlloy::array2spline()
 {
     rdr = 1.0/dr;
     rdrho = 1.0/drho;
@@ -1086,7 +1039,7 @@ void PairBehler::array2spline()
 
 /* ---------------------------------------------------------------------- */
 
-void PairBehler::interpolate(int n, double delta, double *f, double **spline)
+void PairTensorAlloy::interpolate(int n, double delta, double *f, double **spline)
 {
     for (int m = 1; m <= n; m++) spline[m][6] = f[m];
 
@@ -1122,7 +1075,7 @@ void PairBehler::interpolate(int n, double delta, double *f, double **spline)
    only called by proc 0
 ------------------------------------------------------------------------- */
 
-void PairBehler::grab(FILE *fp, char *filename, int n, double *list)
+void PairTensorAlloy::grab(FILE *fp, char *filename, int n, double *list)
 {
     char *ptr;
     char line[MAXLINE];
@@ -1138,7 +1091,7 @@ void PairBehler::grab(FILE *fp, char *filename, int n, double *list)
 
 /* ---------------------------------------------------------------------- */
 
-int PairBehler::pack_forward_comm(int n, int *list, double *buf,
+int PairTensorAlloy::pack_forward_comm(int n, int *list, double *buf,
                                int /*pbc_flag*/, int * /*pbc*/)
 {
     int i,j,m;
@@ -1162,7 +1115,7 @@ int PairBehler::pack_forward_comm(int n, int *list, double *buf,
 
 /* ---------------------------------------------------------------------- */
 
-void PairBehler::unpack_forward_comm(int n, int first, double *buf)
+void PairTensorAlloy::unpack_forward_comm(int n, int first, double *buf)
 {
     int i,m,last;
 
@@ -1184,7 +1137,7 @@ void PairBehler::unpack_forward_comm(int n, int first, double *buf)
 
 /* ---------------------------------------------------------------------- */
 
-int PairBehler::pack_reverse_comm(int n, int first, double *buf)
+int PairTensorAlloy::pack_reverse_comm(int n, int first, double *buf)
 {
     int i,m,last;
 
@@ -1207,7 +1160,7 @@ int PairBehler::pack_reverse_comm(int n, int first, double *buf)
 
 /* ---------------------------------------------------------------------- */
 
-void PairBehler::unpack_reverse_comm(int n, int *list, double *buf)
+void PairTensorAlloy::unpack_reverse_comm(int n, int *list, double *buf)
 {
     int i,j,m;
 
@@ -1231,7 +1184,7 @@ void PairBehler::unpack_reverse_comm(int n, int *list, double *buf)
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
-double PairBehler::memory_usage()
+double PairTensorAlloy::memory_usage()
 {
     double bytes = Pair::memory_usage();
     bytes += 21 * nmax * sizeof(double) + 10000;

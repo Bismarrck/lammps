@@ -4,50 +4,26 @@
 
 #ifdef PAIR_CLASS
 
-PairStyle(behler, PairBehler)
+PairStyle(tensoralloy, PairTensorAlloy)
 
 #else
 
-#ifndef LMP_PAIR_BEHLER_H
-#define LMP_PAIR_BEHLER_H
+#ifndef LMP_PAIR_TENSORALLOY_H
+#define LMP_PAIR_TENSORALLOY_H
 
 #include "pair.h"
+#include "virtual_atom_approach.h"
+
+#include "tensorflow/core/public/session.h"
+
 
 namespace LAMMPS_NS {
 
-    class VirtualAtomMap {
+
+    class PairTensorAlloy : public Pair {
     public:
-
-        VirtualAtomMap(Memory *, int, int *, int, int *);
-        ~VirtualAtomMap();
-
-        void print();
-
-    private:
-        // Variables from outside
-        int _n_elements;
-        int *_max_occurs;
-        int _inum;
-        int *_itypes;
-
-    protected:
-        // Internal variables
-        int n_atoms_vap;
-        int *element_map;
-        int *offsets;
-        int *index_map;
-        int *reverse_map;
-        int *splits;
-        bool *mask;
-
-        Memory *_memory;
-    };
-
-
-    class PairBehler : public Pair {
-    public:
-        PairBehler(class LAMMPS *);
-        virtual ~PairBehler();
+        PairTensorAlloy(class LAMMPS *);
+        virtual ~PairTensorAlloy();
         virtual void compute(int, int);
         void settings(int, char **);
         void coeff(int, char **);
@@ -63,7 +39,6 @@ namespace LAMMPS_NS {
     protected:
 
         // Virtual-Atom Approach
-        int n_atoms_vap;
         int *sorted_elements;
         bool use_angular;
         int n_eta;
@@ -71,7 +46,9 @@ namespace LAMMPS_NS {
         int n_beta;
         int n_gamma;
         int n_zeta;
+        double rc;
 
+        VirtualAtomMap *vap;
 
         int nmax;                   // allocated size of per-atom arrays
         double cutforcesq,cutmax;
@@ -118,8 +95,11 @@ namespace LAMMPS_NS {
 
         void read_file(char *);
         void file2array();
-    };
 
+    private:
+        tensorflow::Session *session;
+
+    };
 }
 
 #endif
