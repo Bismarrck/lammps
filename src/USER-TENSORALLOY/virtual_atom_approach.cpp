@@ -14,7 +14,7 @@ using namespace LAMMPS_NS;
 
 VirtualAtomMap::VirtualAtomMap()
 {
-    _n_elements = 0;
+    _n_symbols = 0;
     _inum = 0;
 
     n_atoms_vap = 0;
@@ -32,7 +32,7 @@ VirtualAtomMap::VirtualAtomMap()
 
 /* ---------------------------------------------------------------------- */
 
-VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
+VirtualAtomMap::VirtualAtomMap(LAMMPS_NS::Memory *memory, int n_symbols,
                                const int *max_occurs, int inum, int *itypes)
 {
     int i = 0;
@@ -48,14 +48,14 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
     reverse_map = nullptr;
     splits = nullptr;
 
-    _n_elements = n_elements;
+    _n_symbols = n_symbols;
     _itypes = itypes;
     _inum = inum;
     _memory = memory;
 
     // self.max_vap_n_atoms = sum(max_occurs.values()) + istart
     n_atoms_vap = REAL_ATOM_START;
-    for (i = 0; i < n_elements; i++) {
+    for (i = 1; i < n_symbols; i++) {
         n_atoms_vap += max_occurs[i];
     }
 
@@ -63,26 +63,30 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
     _memory->create(mask, n_atoms_vap, "pair:vap:mask");
     _memory->create(index_map, inum, "pair:vap:index_map");
     _memory->create(reverse_map, n_atoms_vap, "pair:vap:reverse_map");
-    _memory->create(offsets, n_elements + 1, "pair:vap:offsets");
-    _memory->create(splits, n_elements + 1, "pair:vap:splits");
+    _memory->create(offsets, n_symbols, "pair:vap:offsets");
+    _memory->create(splits, n_symbols, "pair:vap:splits");
+
+    // Initialize `mask` to all zeros
+    for (i = 0; i < n_atoms_vap; i++)
+        mask[i] = 0.0;
 
     // Initialize `delta` to all zeros.
-    _memory->create(delta, n_elements + 1, "pair:vap:delta");
-    for (i = 0; i < n_elements + 1; i++) {
+    _memory->create(delta, n_symbols, "pair:vap:delta");
+    for (i = 0; i < n_symbols; i++) {
         delta[i] = 0;
     }
 
     // self.splits = np.array([1, ] + [max_occurs[e] for e in elements])
     splits[0] = 1;
-    for (i = 1; i < n_elements + 1; i++) {
-        splits[i] = max_occurs[i - 1];
+    for (i = 1; i < n_symbols; i++) {
+        splits[i] = max_occurs[i];
     }
 
     // offsets = np.cumsum([max_occurs[e] for e in elements])[:-1]
     // offsets = np.insert(offsets, 0, 0)
     offsets[0] = 1;
-    for (i = 1; i < n_elements + 1; i++) {
-        offsets[i] = offsets[i - 1] + max_occurs[i - 1];
+    for (i = 1; i < n_symbols; i++) {
+        offsets[i] = offsets[i - 1] + max_occurs[i];
     }
 
     for (i = 0; i < inum; i++) {
@@ -93,7 +97,7 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory, int n_elements,
         i_gsl = offsets[i_ele - 1] + delta[i_ele];
         index_map[i_old] = i_gsl;
         delta[i_ele] += 1;
-        mask[i_gsl] = true;
+        mask[i_gsl] = 1.0;
     }
 
     // `delta` is no longer needed.
@@ -115,7 +119,6 @@ void print_int_array(const std::string& title, const int *array, const int num,
         int max_per_line)
 {
     max_per_line = MAX(max_per_line, 1);
-
     std::cout << "* " << title << ":" << std::endl;
     for (int i = 0; i < num; i++) {
         std::cout << " " << array[i];
@@ -132,8 +135,8 @@ void VirtualAtomMap::print()
     std::cout << "Virtual-Atom Map" << std::endl;
     std::cout << "----------------" << std::endl;
     std::cout << "N_atoms_vap: " << n_atoms_vap << std::endl;
-    print_int_array("Splits", splits, _n_elements + 1, 20);
-    print_int_array("Offsets", offsets, _n_elements + 1, 20);
+    print_int_array("Splits", splits, _n_symbols, 20);
+    print_int_array("Offsets", offsets, _n_symbols, 20);
     print_int_array("IndexMap", index_map, _inum, 20);
     print_int_array("ReverseMap", reverse_map, n_atoms_vap, 20);
     std::cout << std::endl;
@@ -144,7 +147,7 @@ void VirtualAtomMap::print()
 double VirtualAtomMap::memory_usage()
 {
     auto bytes = (double)sizeof(int);
-    auto n = (n_atoms_vap * 2 + _inum + 2 * (_n_elements + 1));
+    auto n = (n_atoms_vap * 2 + _inum + 2 * _n_symbols);
     return bytes * n;
 }
 
