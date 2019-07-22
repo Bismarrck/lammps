@@ -180,7 +180,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     // loop over neighbors of my atoms
     Tensor h_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({3, 3}));
-    auto h_tensor_view = h_tensor.tensor<float, 2>();
+    auto h_tensor_mapped = h_tensor.tensor<float, 2>();
 
     double boxxlo, boxxhi, boxylo, boxyhi, boxzlo, boxzhi;
     double boxxy, boxxz, boxyz;
@@ -211,47 +211,54 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     double yhilo = (boxyhi - boxylo) - abs(boxyz);
     double zhilo = boxzhi - boxzlo;
 
-    h_tensor_view(0, 0) = static_cast<float> (xhilo);
-    h_tensor_view(0, 1) = static_cast<float> (0.0);
-    h_tensor_view(0, 2) = static_cast<float> (0.0);
-    h_tensor_view(1, 0) = static_cast<float> (boxxy);
-    h_tensor_view(1, 1) = static_cast<float> (yhilo);
-    h_tensor_view(1, 2) = static_cast<float> (0.0);
-    h_tensor_view(2, 0) = static_cast<float> (boxxz);
-    h_tensor_view(2, 1) = static_cast<float> (boxyz);
-    h_tensor_view(2, 2) = static_cast<float> (zhilo);
+    h_tensor_mapped(0, 0) = static_cast<float> (xhilo);
+    h_tensor_mapped(0, 1) = static_cast<float> (0.0);
+    h_tensor_mapped(0, 2) = static_cast<float> (0.0);
+    h_tensor_mapped(1, 0) = static_cast<float> (boxxy);
+    h_tensor_mapped(1, 1) = static_cast<float> (yhilo);
+    h_tensor_mapped(1, 2) = static_cast<float> (0.0);
+    h_tensor_mapped(2, 0) = static_cast<float> (boxxz);
+    h_tensor_mapped(2, 1) = static_cast<float> (boxyz);
+    h_tensor_mapped(2, 2) = static_cast<float> (zhilo);
+
+    LOG(INFO) << "Cell: " << "\n" << h_tensor.matrix<float>();
 
     double vol;
-    if (domain->dimension == 3)
+    if (domain->dimension == 3) {
         vol = domain->xprd * domain->yprd * domain->zprd;
-    else
+    }
+    else {
         vol = domain->xprd * domain->yprd;
-
-    Tensor volume_tensor = Tensor(static_cast<float > (vol));
+    }
+    auto volume_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape());
+    volume_tensor.tensor<float, 0>()(0) = static_cast<float> (vol);
     std::cout << "Volume: " << std::setprecision(6) << vol << std::endl;
 
     double ivol = 1.0 / vol;
     double ih[9];
-    ih[0] = (h_tensor_view(1, 1) * h_tensor_view(2, 2) - h_tensor_view(2, 1) * h_tensor_view(1, 2)) * ivol;
-    ih[1] = (h_tensor_view(0, 2) * h_tensor_view(2, 1) - h_tensor_view(0, 1) * h_tensor_view(2, 2)) * ivol;
-    ih[2] = (h_tensor_view(0, 1) * h_tensor_view(1, 2) - h_tensor_view(0, 2) * h_tensor_view(1, 1)) * ivol;
-    ih[3] = (h_tensor_view(1, 2) * h_tensor_view(2, 0) - h_tensor_view(1, 0) * h_tensor_view(2, 2)) * ivol;
-    ih[4] = (h_tensor_view(0, 0) * h_tensor_view(2, 2) - h_tensor_view(0, 2) * h_tensor_view(2, 0)) * ivol;
-    ih[5] = (h_tensor_view(1, 0) * h_tensor_view(0, 2) - h_tensor_view(0, 0) * h_tensor_view(1, 2)) * ivol;
-    ih[6] = (h_tensor_view(1, 0) * h_tensor_view(2, 1) - h_tensor_view(2, 0) * h_tensor_view(1, 1)) * ivol;
-    ih[7] = (h_tensor_view(2, 0) * h_tensor_view(0, 1) - h_tensor_view(0, 0) * h_tensor_view(2, 1)) * ivol;
-    ih[8] = (h_tensor_view(0, 0) * h_tensor_view(1, 1) - h_tensor_view(1, 0) * h_tensor_view(0, 1)) * ivol;
+    ih[0] = (h_tensor_mapped(1, 1) * h_tensor_mapped(2, 2) - h_tensor_mapped(2, 1) * h_tensor_mapped(1, 2)) * ivol;
+    ih[1] = (h_tensor_mapped(0, 2) * h_tensor_mapped(2, 1) - h_tensor_mapped(0, 1) * h_tensor_mapped(2, 2)) * ivol;
+    ih[2] = (h_tensor_mapped(0, 1) * h_tensor_mapped(1, 2) - h_tensor_mapped(0, 2) * h_tensor_mapped(1, 1)) * ivol;
+    ih[3] = (h_tensor_mapped(1, 2) * h_tensor_mapped(2, 0) - h_tensor_mapped(1, 0) * h_tensor_mapped(2, 2)) * ivol;
+    ih[4] = (h_tensor_mapped(0, 0) * h_tensor_mapped(2, 2) - h_tensor_mapped(0, 2) * h_tensor_mapped(2, 0)) * ivol;
+    ih[5] = (h_tensor_mapped(1, 0) * h_tensor_mapped(0, 2) - h_tensor_mapped(0, 0) * h_tensor_mapped(1, 2)) * ivol;
+    ih[6] = (h_tensor_mapped(1, 0) * h_tensor_mapped(2, 1) - h_tensor_mapped(2, 0) * h_tensor_mapped(1, 1)) * ivol;
+    ih[7] = (h_tensor_mapped(2, 0) * h_tensor_mapped(0, 1) - h_tensor_mapped(0, 0) * h_tensor_mapped(2, 1)) * ivol;
+    ih[8] = (h_tensor_mapped(0, 0) * h_tensor_mapped(1, 1) - h_tensor_mapped(1, 0) * h_tensor_mapped(0, 1)) * ivol;
 
-    auto ihmat = Eigen::Map<Eigen::Matrix<double, 3, 3>>(ih);
+    auto n_atoms_vap_tensor = Tensor(tensorflow::DT_INT32, TensorShape());
+    n_atoms_vap_tensor.tensor<int32, 0>()(0) = static_cast<int32> (vap->get_n_atoms_vap());
 
-    LOG(INFO) << "Cell: " << "\n" << h_tensor.matrix<float>();
-    LOG(INFO) << "Cell (inv): " << "\n" << ihmat;
+    auto pulay_stress_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape());
+    pulay_stress_tensor.tensor<float, 0>()(0) = static_cast<float> (0.0);
 
-    Tensor n_atoms_vap_tensor = Tensor(static_cast<int32> (vap->get_n_atoms_vap()));
-    Tensor pulay_stress_tensor = Tensor(static_cast<float> (0.0));
-    Tensor R_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
-    auto R_map = R_tensor.tensor<float, 2>();
-    R_map.setConstant(0.0f);
+    auto R_tensor = new Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
+    auto R_tensor_mapped = R_tensor->tensor<float, 2>();
+    for (i = 0; i < vap->get_n_atoms_vap(); i++) {
+        R_tensor_mapped(i, 0) = 0.0f;
+        R_tensor_mapped(i, 1) = 0.0f;
+        R_tensor_mapped(i, 2) = 0.0f;
+    }
 
     int32 *index_map = vap->get_index_map();
     int nij_max = (inum - 1) * inum / 2;
@@ -261,12 +268,12 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         igsl = index_map[ilocal];
         jnum = numneigh[ilocal];
         nij_max += jnum;
-        R_map(igsl, 0) = x[ilocal][0];
-        R_map(igsl, 1) = x[ilocal][1];
-        R_map(igsl, 2) = x[ilocal][2];
+        R_tensor_mapped(igsl, 0) = x[ilocal][0];
+        R_tensor_mapped(igsl, 1) = x[ilocal][1];
+        R_tensor_mapped(igsl, 2) = x[ilocal][2];
     }
 
-    LOG(INFO) << "R(GSL): \n" << R_map;
+    LOG(INFO) << "R(GSL): \n" << R_tensor_mapped;
     std::cout << "Nij_max: " << nij_max << std::endl;
     std::cout << "N_atoms_vap: " << vap->get_n_atoms_vap() << std::endl;
 
@@ -275,14 +282,19 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         composition_tensor.tensor<float, 1>()(i - 1) = 0.0;
     }
 
-    auto *g2_Slist = new float [nij_max * 3];
-    auto *g2_ilist = new int32 [nij_max * 3];
-    auto *g2_jlist = new int32 [nij_max * 3];
-    auto *g2_v2gmap = new int32 [nij_max * 2];
+    auto g2_shift_tensor = new Tensor(tensorflow::DT_FLOAT, TensorShape({312, 3}));
+    auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<float, 2>();
+
+    auto g2_ilist_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({312}));
+    auto g2_ilist_tensor_mapped = g2_ilist_tensor->tensor<int32, 1>();
+
+    auto g2_jlist_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({312}));
+    auto g2_jlist_tensor_mapped = g2_jlist_tensor->tensor<int32, 1>();
+
+    auto g2_v2gmap_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({312, 2}));
+    auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
 
     int nij = 0;
-    int nij2 = 0;
-    int nij3 = 0;
     int jtag, j0;
     double ix0, iy0, iz0;
     double jx0, jy0, jz0, nhx, nhy, nhz, nx, ny, nz;
@@ -318,16 +330,14 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 nx = nhx * ih[0] + nhy * ih[3] + nhz * ih[6];
                 ny = nhx * ih[1] + nhy * ih[4] + nhz * ih[7];
                 nz = nhx * ih[2] + nhy * ih[5] + nhz * ih[8];
-                g2_Slist[nij3 + 0] = static_cast<float> (nx);
-                g2_Slist[nij3 + 1] = static_cast<float> (ny);
-                g2_Slist[nij3 + 2] = static_cast<float> (nz);
-                g2_ilist[nij] = static_cast<int32> (index_map[i]);
-                g2_jlist[nij] = static_cast<int32> (index_map[j0]);
-                g2_v2gmap[nij2 + 0] = static_cast<int32> (index_map[i]);
-                g2_v2gmap[nij2 + 1] = static_cast<int32> (g2_offset_map[OFFSET2(itype, jtype, ntypes)]);
+                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (nx);
+                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (ny);
+                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (nz);
+                g2_ilist_tensor_mapped(nij) = static_cast<int32> (index_map[i]);
+                g2_jlist_tensor_mapped(nij) = static_cast<int32> (index_map[j0]);
+                g2_v2gmap_tensor_mapped(nij, 0) = static_cast<int32> (index_map[i]);
+                g2_v2gmap_tensor_mapped(nij, 1) = static_cast<int32> (g2_offset_map[OFFSET2(itype, jtype, ntypes)]);
                 nij += 1;
-                nij2 += 2;
-                nij3 += 3;
             }
         }
     }
@@ -349,41 +359,19 @@ void PairTensorAlloy::compute(int eflag, int vflag)
             jtype = atom->type[j];
             rsq = delx*delx + dely*dely + delz*delz;
             if (rsq < cutforcesq) {
-                g2_Slist[nij3 + 0] = static_cast<float> (0.f);
-                g2_Slist[nij3 + 1] = static_cast<float> (0.f);
-                g2_Slist[nij3 + 2] = static_cast<float> (0.f);
-                g2_ilist[nij] = static_cast<int32> (index_map[i]);
-                g2_jlist[nij] = static_cast<int32> (index_map[j]);
-                g2_v2gmap[nij2 + 0] = static_cast<int32> (index_map[i]);
-                g2_v2gmap[nij2 + 1] = static_cast<int32> (g2_offset_map[OFFSET2(itype, jtype, ntypes)]);
+                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (0.f);
+                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (0.f);
+                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (0.f);
+                g2_ilist_tensor_mapped(nij) = static_cast<int32> (index_map[i]);
+                g2_jlist_tensor_mapped(nij) = static_cast<int32> (index_map[j]);
+                g2_v2gmap_tensor_mapped(nij, 0) = static_cast<int32> (index_map[i]);
+                g2_v2gmap_tensor_mapped(nij, 1) = static_cast<int32> (g2_offset_map[OFFSET2(itype, jtype, ntypes)]);
                 nij += 1;
-                nij2 += 2;
-                nij3 += 3;
             }
         }
     }
 
     std::cout << "Nij: " << nij << std::endl;
-
-    auto g2_shift_tensor_locator = FakeAllocator(g2_Slist);
-    auto g2_shift_tensor = Tensor(&g2_shift_tensor_locator, tensorflow::DT_FLOAT, TensorShape({nij, 3}));
-
-//    auto g2_shift_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({nij, 3}));
-//    auto g2_shift_view = g2_shift_tensor.flat<float>();
-//    std::cout << "Sizes: " << g2_shift_view.size() << ", " << nij3 * sizeof(float) << std::endl;
-//    std::memcpy(g2_shift_view.data(), g2_Slist, nij3 * sizeof(float));
-
-    auto g2_ilist_tensor = Tensor(tensorflow::DT_INT32, TensorShape({nij}));
-    auto g2_ilist_view = g2_ilist_tensor.flat<int32>();
-    std::memcpy(g2_ilist_view.data(), g2_ilist, nij * sizeof(int32));
-
-    auto g2_jlist_tensor = Tensor(tensorflow::DT_INT32, TensorShape({nij}));
-    auto g2_jlist_view = g2_jlist_tensor.flat<int32>();
-    std::memcpy(g2_jlist_view.data(), g2_jlist, nij * sizeof(int32));
-
-    auto g2_v2gmap_tensor = Tensor(tensorflow::DT_INT32, TensorShape({nij, 2}));
-    auto g2_v2gmap_view = g2_v2gmap_tensor.flat<int32>();
-    std::memcpy(g2_v2gmap_view.data(), g2_v2gmap, nij2 * sizeof(int32));
 
     auto atom_mask_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap()}));
     auto atom_mask_ptr = vap->get_atom_mask();
@@ -400,25 +388,20 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     LOG(INFO) << "Row splits: \n" << row_splits_tensor.tensor<int32, 1>();
 
-//    delete [] g2_Slist;
-//    delete [] g2_ilist;
-//    delete [] g2_jlist;
-//    delete [] g2_v2gmap;
-
     std::vector<Tensor> outputs;
     std::vector<std::pair<string, Tensor>> feed_dict({
-        {"Placeholders/positions:0", R_tensor},
-        {"Placeholders/cells:0", h_tensor},
-        {"Placeholders/n_atoms_plus_virt:0", n_atoms_vap_tensor},
-        {"Placeholders/composition:0", composition_tensor},
-        {"Placeholders/volume:0", volume_tensor},
-        {"Placeholders/mask:0", atom_mask_tensor},
-        {"Placeholders/row_splits:0", row_splits_tensor},
-        {"Placeholders/g2.ilist:0", g2_ilist_tensor},
-        {"Placeholders/g2.jlist:0", g2_jlist_tensor},
-        {"Placeholders/g2.shift:0", g2_shift_tensor},
-        {"Placeholders/g2.v2g_map:0", g2_v2gmap_tensor},
-        {"Placeholders/pulay_stress:0", pulay_stress_tensor},
+        {"Placeholders/positions", *R_tensor},
+        {"Placeholders/cells", h_tensor},
+        {"Placeholders/n_atoms_plus_virt", n_atoms_vap_tensor},
+        {"Placeholders/composition", composition_tensor},
+        {"Placeholders/volume", volume_tensor},
+        {"Placeholders/mask", atom_mask_tensor},
+        {"Placeholders/row_splits", row_splits_tensor},
+        {"Placeholders/g2.ilist", *g2_ilist_tensor},
+        {"Placeholders/g2.jlist", *g2_jlist_tensor},
+        {"Placeholders/g2.shift", *g2_shift_tensor},
+        {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
+        {"Placeholders/pulay_stress", pulay_stress_tensor},
     });
 
     for (const auto& key_value_pair: feed_dict) {
@@ -427,16 +410,22 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         std::cout << key_value_pair.first << ": " << shape.DebugString() << ", " << dtype << std::endl;
     }
 
-    std::vector<string> run_ops({"Output/Energy/energy:0"});
+    std::vector<string> run_ops({"Output/Energy/energy:0", "Output/Forces/forces:0"});
 
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
     LOG(INFO) << status.ToString();
-    LOG(INFO) << "Energy (eV): " << outputs[0].scalar<float>();
-//    LOG(INFO) << "Forces \n" << outputs[1].matrix<float>();
+    LOG(INFO) << "Energy (eV):" << outputs[0].scalar<float>();
+    LOG(INFO) << "Forces (eV/ang):\n" << outputs[1].matrix<float>();
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<float>().data()[0];
     }
+
+    delete R_tensor;
+    delete g2_shift_tensor;
+    delete g2_ilist_tensor;
+    delete g2_jlist_tensor;
+    delete g2_v2gmap_tensor;
 }
 
 /* ----------------------------------------------------------------------
@@ -472,8 +461,7 @@ void PairTensorAlloy::settings(int narg, char **/*arg*/)
 
 // Reads a model graph definition from disk, and creates a session object you
 // can use to run it.
-Status LoadGraph(const string &graph_file_name,
-                 tensorflow::Session **session) {
+Status PairTensorAlloy::load_graph(const string &graph_file_name) {
     tensorflow::GraphDef graph_def;
     Status load_graph_status =
             ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
@@ -481,7 +469,17 @@ Status LoadGraph(const string &graph_file_name,
         return tensorflow::errors::NotFound("Failed to load compute graph at '",
                                             graph_file_name, "'");
     }
-    Status session_create_status = (*session)->Create(graph_def);
+
+    // Initialize the session
+    tensorflow::SessionOptions options;
+    options.config.set_allow_soft_placement(true);
+    options.config.set_use_per_session_threads(true);
+    options.config.set_log_device_placement(false);
+    options.config.set_inter_op_parallelism_threads(0);
+    options.config.set_intra_op_parallelism_threads(1);
+
+    session.reset(tensorflow::NewSession(options));
+    Status session_create_status = session->Create(graph_def);
     if (!session_create_status.ok()) {
         return session_create_status;
     }
@@ -512,26 +510,14 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         element_map[i] = 0;
     }
 
-    // Initialize the session
-    tensorflow::SessionOptions options;
-
-    options.config.set_allow_soft_placement(true);
-    options.config.set_use_per_session_threads(true);
-    options.config.set_log_device_placement(false);
-
-    options.config.set_inter_op_parallelism_threads(0);
-    options.config.set_intra_op_parallelism_threads(1);
-
-    Status status = tensorflow::NewSession(options, &session);
-
     // Load the graph model
     string graph_model_path(arg[0]);
-    Status load_graph_status = LoadGraph(graph_model_path, &session);
+    Status load_graph_status = load_graph(graph_model_path);
     std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
 
     // Decode the transformer
     std::vector<Tensor> outputs;
-    status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
     std::cout << "Recover model metadata: " << status << std::endl;
 
     Json::Value jsonData;

@@ -55,8 +55,11 @@ namespace LAMMPS_NS {
 
         void allocate();
 
+        tensorflow::Status load_graph(const tensorflow::string& filename);
+
     private:
-        tensorflow::Session *session;
+
+        std::unique_ptr<tensorflow::Session> session;
 
     };
 }
