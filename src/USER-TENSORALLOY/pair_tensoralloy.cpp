@@ -96,6 +96,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     nmax = 0;
     map = nullptr;
 
+    // Disable log by default.
+    verbose = false;
+
     // set comm size needed by this Pair
     comm_forward = 0;
     comm_reverse = 0;
@@ -250,8 +253,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     firstneigh = list->firstneigh;
     index_map = vap->get_index_map();
 
-    std::cout << std::endl;
-
     // Cell
     auto h_tensor = Tensor(DT_FLOAT, TensorShape({3, 3}));
     update_cell<float>(&h_tensor, volume, h_inv);
@@ -371,14 +372,16 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         row_splits_tensor.tensor<int32, 1>()(i) = vap->get_row_splits()[i];
     }
 
-    std::cout << "Cell: \n" << std::setprecision(6) << h_tensor.matrix<float>() << std::endl;
-    std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
-    std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
-    std::cout << "Nij_max: " << nij_max << std::endl;
-    std::cout << "composition: \n" << composition_tensor.vec<float>() << std::endl;
-    std::cout << "Nij: " << nij << std::endl;
-    std::cout << "Atom mask: \n" << atom_mask_tensor.vec<float>() << std::endl;
-    std::cout << "Row splits: \n" << row_splits_tensor.vec<int32>() << std::endl;
+    if (verbose) {
+        std::cout << "Cell: \n" << std::setprecision(6) << h_tensor.matrix<float>() << std::endl;
+        std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
+        std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
+        std::cout << "Nij_max: " << nij_max << std::endl;
+        std::cout << "composition: \n" << composition_tensor.vec<float>() << std::endl;
+        std::cout << "Nij: " << nij << std::endl;
+        std::cout << "Atom mask: \n" << atom_mask_tensor.vec<float>() << std::endl;
+        std::cout << "Row splits: \n" << row_splits_tensor.vec<int32>() << std::endl;
+    }
 
     std::vector<Tensor> outputs;
     std::vector<std::pair<string, Tensor>> feed_dict({
@@ -402,8 +405,13 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         "Output/Stress/Voigt/stress:0"});
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
 
-    std::cout << status.ToString() << std::endl;
-    std::cout << outputs[2].vec<float>() << std::endl;
+    if (verbose) {
+        std::cout << status.ToString() << std::endl;
+    }
+    else if (!status.ok()) {
+        std::cout << status.ToString() << std::endl;
+        error->all(FLERR, "TensorAlloy internal error");
+    }
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<float>().data()[0];
@@ -413,7 +421,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     const int32 *reverse_map = vap->get_reverse_map();
 
     for (igsl = 0; igsl < vap->get_n_atoms_vap(); igsl++) {
-        ilocal = reverse_map[i];
+        ilocal = reverse_map[igsl];
         if (ilocal >= 0) {
             atom->f[ilocal][0] = static_cast<double> (nn_gsl_forces(igsl, 0));
             atom->f[ilocal][1] = static_cast<double> (nn_gsl_forces(igsl, 1));
