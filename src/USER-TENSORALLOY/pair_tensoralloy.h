@@ -46,6 +46,9 @@ namespace LAMMPS_NS {
 
         VirtualAtomMap *vap;
 
+        template <typename T>
+        void update_cell (tensorflow::Tensor *h, double &volume, double (&h_inv)[3][3]);
+
         int nmax;                   // allocated size of per-atom arrays
         double cutforcesq, cutmax;
 
@@ -56,6 +59,7 @@ namespace LAMMPS_NS {
         void allocate();
 
         tensorflow::Status load_graph(const tensorflow::string& filename);
+
 
     private:
 
