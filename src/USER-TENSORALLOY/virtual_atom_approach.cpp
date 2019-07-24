@@ -18,8 +18,6 @@ VirtualAtomMap::VirtualAtomMap()
     _inum = 0;
 
     n_atoms_vap = 0;
-
-    _itypes = nullptr;
     _memory = nullptr;
 
     mask = nullptr;
@@ -33,7 +31,7 @@ VirtualAtomMap::VirtualAtomMap()
 /* ---------------------------------------------------------------------- */
 
 VirtualAtomMap::VirtualAtomMap(LAMMPS_NS::Memory *memory, int n_symbols,
-                               const int *max_occurs, int inum, int *itypes)
+                               const int *max_occurs, int inum, const int *itypes)
 {
     int i = 0;
     int i_old = 0;
@@ -49,7 +47,6 @@ VirtualAtomMap::VirtualAtomMap(LAMMPS_NS::Memory *memory, int n_symbols,
     splits = nullptr;
 
     _n_symbols = n_symbols;
-    _itypes = itypes;
     _inum = inum;
     _memory = memory;
 

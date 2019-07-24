@@ -11,14 +11,17 @@
 
 namespace LAMMPS_NS {
 
+    using tensorflow::int32;
+
     class VirtualAtomMap {
     public:
         VirtualAtomMap();
-        VirtualAtomMap(Memory *, int, const int *, int, int *);
+        VirtualAtomMap(Memory *, int, const int *, int, const int *);
         ~VirtualAtomMap();
 
-        int *get_row_splits() { return splits; }
-        int *get_index_map() { return index_map; }
+        const int32 *get_row_splits() { return splits; }
+        const int32 *get_index_map() { return index_map; }
+        const int32 *get_reverse_map() { return reverse_map; }
         float *get_atom_mask() { return mask; }
         int get_n_atoms_vap() { return n_atoms_vap; }
 
@@ -29,16 +32,15 @@ namespace LAMMPS_NS {
         // Variables from outside
         int _n_symbols;
         int _inum;
-        int *_itypes;
 
     protected:
         // Internal variables
         int n_atoms_vap;
-        int *element_map;
-        int *offsets;
-        int *index_map;
-        int *reverse_map;
-        tensorflow::int32 *splits;
+        int32 *element_map;
+        int32 *offsets;
+        int32 *index_map;
+        int32 *reverse_map;
+        int32 *splits;
         float *mask;
 
         Memory *_memory;

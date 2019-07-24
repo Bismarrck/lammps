@@ -58,11 +58,12 @@ using namespace LAMMPS_NS;
 
 using tensorflow::Flag;
 using tensorflow::int32;
+using tensorflow::DT_INT32;
+using tensorflow::DT_FLOAT;
 using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::Tensor;
 using tensorflow::TensorShape;
-using tensorflow::ops::Placeholder;
 
 #define MAXLINE 1024
 #define IJ(i,j,n) i * n + j
@@ -108,6 +109,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     // Temporarily disable atomic energy.
     eflag_atom = 0;
+
+    // Per-atom virial is not supported.
+    vflag_atom = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -215,7 +219,7 @@ void PairTensorAlloy::update_cell(Tensor *h, double &volume, double (&h_inv)[3][
 
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-    int i, j;
+    unsigned int i, j;
     int ii, jj, inum, jnum, itype, jtype, ilocal, igsl;
     int nij_max;
     int nij = 0;
@@ -228,7 +232,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     double jx0, jy0, jz0, nhx, nhy, nhz, nx, ny, nz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     int ntypes = atom->ntypes + 1;
-    int32 *index_map;
+    const int32 *index_map;
 
     ev_init(eflag, vflag);
 
@@ -249,23 +253,24 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     std::cout << std::endl;
 
     // Cell
-    auto h_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({3, 3}));
+    auto h_tensor = Tensor(DT_FLOAT, TensorShape({3, 3}));
     update_cell<float>(&h_tensor, volume, h_inv);
     auto h_tensor_matrix = h_tensor.matrix<float>();
 
     // Volume
-    auto volume_tensor = Tensor(static_cast<float> (volume));
+    auto volume_tensor = Tensor(DT_FLOAT, TensorShape({}));
+    volume_tensor.flat<float>()(0) = static_cast<float> (volume);
 
     // N_atom_vap
-    auto n_atoms_vap_tensor = Tensor(tensorflow::DT_INT32, TensorShape());
-    n_atoms_vap_tensor.tensor<int32, 0>()(0) = static_cast<int32> (vap->get_n_atoms_vap());
+    auto n_atoms_vap_tensor = Tensor(DT_INT32, TensorShape());
+    n_atoms_vap_tensor.flat<int32>()(0) = vap->get_n_atoms_vap();
 
     // Pulay stress
-    auto pulay_stress_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape());
-    pulay_stress_tensor.tensor<float, 0>()(0) = static_cast<float> (0.0);
+    auto pulay_stress_tensor = Tensor(DT_FLOAT, TensorShape());
+    pulay_stress_tensor.flat<float>()(0) = 0.0f;
 
     // Positions
-    auto R_tensor = new Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
+    auto R_tensor = new Tensor(DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
     auto R_tensor_mapped = R_tensor->tensor<float, 2>();
     R_tensor_mapped.setConstant(0.0f);
     nij_max = (inum - 1) * inum / 2;
@@ -280,24 +285,24 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         R_tensor_mapped(igsl, 2) = x[ilocal][2];
     }
 
-    auto composition_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({ntypes - 1}));
+    auto composition_tensor = Tensor(DT_FLOAT, TensorShape({ntypes - 1}));
     for (i = 1; i < ntypes; i++) {
         composition_tensor.tensor<float, 1>()(i - 1) = 0.0;
     }
 
-    auto g2_shift_tensor = new Tensor(tensorflow::DT_FLOAT, TensorShape({nij_max, 3}));
+    auto g2_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nij_max, 3}));
     auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<float, 2>();
     g2_shift_tensor_mapped.setConstant(0);
 
-    auto g2_ilist_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({nij_max}));
+    auto g2_ilist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
     auto g2_ilist_tensor_mapped = g2_ilist_tensor->tensor<int32, 1>();
     g2_ilist_tensor_mapped.setConstant(0);
 
-    auto g2_jlist_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({nij_max}));
+    auto g2_jlist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
     auto g2_jlist_tensor_mapped = g2_jlist_tensor->tensor<int32, 1>();
     g2_jlist_tensor_mapped.setConstant(0);
 
-    auto g2_v2gmap_tensor = new Tensor(tensorflow::DT_INT32, TensorShape({nij_max, 2}));
+    auto g2_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nij_max, 2}));
     auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
     g2_v2gmap_tensor_mapped.setConstant(0);
 
@@ -355,13 +360,13 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         }
     }
 
-    auto atom_mask_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap()}));
+    auto atom_mask_tensor = Tensor(DT_FLOAT, TensorShape({vap->get_n_atoms_vap()}));
     auto atom_mask_ptr = vap->get_atom_mask();
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
         atom_mask_tensor.tensor<float, 1>()(i) = atom_mask_ptr[i];
     }
 
-    auto row_splits_tensor = Tensor(tensorflow::DT_INT32, TensorShape({ntypes}));
+    auto row_splits_tensor = Tensor(DT_INT32, TensorShape({ntypes}));
     for (i = 0; i < ntypes; i++) {
         row_splits_tensor.tensor<int32, 1>()(i) = vap->get_row_splits()[i];
     }
@@ -391,16 +396,36 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         {"Placeholders/pulay_stress", pulay_stress_tensor},
     });
 
-    std::vector<string> run_ops({"Output/Energy/energy:0", "Output/Forces/forces:0"});
+    std::vector<string> run_ops({
+        "Output/Energy/energy:0",
+        "Output/Forces/forces:0",
+        "Output/Stress/Voigt/stress:0"});
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
 
     std::cout << status.ToString() << std::endl;
-    std::cout << "Energy (eV):" << outputs[0].scalar<float>() << std::endl;
-    std::cout << "Forces (eV/ang):\n" << outputs[1].matrix<float>() << std::endl;
+    std::cout << outputs[2].vec<float>() << std::endl;
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<float>().data()[0];
     }
+
+    auto nn_gsl_forces = outputs[1].matrix<float>();
+    const int32 *reverse_map = vap->get_reverse_map();
+
+    for (igsl = 0; igsl < vap->get_n_atoms_vap(); igsl++) {
+        ilocal = reverse_map[i];
+        if (ilocal >= 0) {
+            atom->f[ilocal][0] = static_cast<double> (nn_gsl_forces(igsl, 0));
+            atom->f[ilocal][1] = static_cast<double> (nn_gsl_forces(igsl, 1));
+            atom->f[ilocal][2] = static_cast<double> (nn_gsl_forces(igsl, 2));
+        }
+    }
+
+    auto nn_virial = outputs[2].vec<float>();
+    for (i = 0; i < 6; i++) {
+        virial[i] = static_cast<double> (nn_virial(i)) * volume * (-1.0);
+    }
+    vflag_fdotr = 0;
 
     delete R_tensor;
     delete g2_shift_tensor;
