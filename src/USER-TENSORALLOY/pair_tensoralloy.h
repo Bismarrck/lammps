@@ -44,28 +44,31 @@ namespace LAMMPS_NS {
         bool verbose;
         tensorflow::int32 *g2_offset_map;
         tensorflow::int32 *g4_offset_map;
-
         VirtualAtomMap *vap;
 
-        template <typename T>
-        void update_cell (tensorflow::Tensor *h, double &volume, double (&h_inv)[3][3]);
-
-        int nmax;                   // allocated size of per-atom arrays
         double cutforcesq, cutmax;
 
-        // potentials as file data
-
-        int *map;                   // which element each atom type maps to
-
-        void allocate();
-
+        template <typename T> double update_cell ();
         tensorflow::Status load_graph(const tensorflow::string& filename);
 
+        int nmax;
+        void allocate();
 
     private:
 
         std::unique_ptr<tensorflow::Session> session;
+        tensorflow::Tensor *h_tensor;
+        double h_inv[3][3];
 
+        tensorflow::Tensor *R_tensor;
+        tensorflow::Tensor *volume_tensor;
+        tensorflow::Tensor *n_atoms_vap_tensor;
+        tensorflow::Tensor *pulay_stress_tensor;
+        tensorflow::Tensor *composition_tensor;
+        bool composition_initialized;
+
+        tensorflow::Tensor *atom_mask_tensor;
+        tensorflow::Tensor *row_splits_tensor;
     };
 }
 
