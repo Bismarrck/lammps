@@ -750,12 +750,30 @@ double PairTensorAlloy::init_one(int /*i*/, int /*j*/)
 }
 
 /* ----------------------------------------------------------------------
+   memory usage of tensors
+------------------------------------------------------------------------- */
+
+double PairTensorAlloy::tensors_memory_usage()
+{
+    double bytes = 0.0;
+    bytes += h_tensor->TotalBytes();
+    bytes += R_tensor->TotalBytes();
+    bytes += volume_tensor->TotalBytes();
+    bytes += atom_mask_tensor->TotalBytes();
+    bytes += pulay_stress_tensor->TotalBytes();
+    bytes += atom_mask_tensor->TotalBytes();
+    bytes += composition_tensor->TotalBytes();
+    return bytes;
+}
+
+/* ----------------------------------------------------------------------
    memory usage of local atom-based arrays
 ------------------------------------------------------------------------- */
 
 double PairTensorAlloy::memory_usage()
 {
     double bytes = Pair::memory_usage();
-    bytes += 21 * nmax * sizeof(double) + 10000;
+    bytes += tensors_memory_usage();
+    bytes += vap->memory_usage();
     return bytes;
 }

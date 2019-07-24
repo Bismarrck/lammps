@@ -69,6 +69,8 @@ namespace LAMMPS_NS {
 
         tensorflow::Tensor *atom_mask_tensor;
         tensorflow::Tensor *row_splits_tensor;
+
+        double tensors_memory_usage();
     };
 }
 
