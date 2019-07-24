@@ -218,10 +218,14 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     int i, j;
     int ii, jj, inum, jnum, itype, jtype, ilocal, igsl;
     int nij_max;
+    int nij = 0;
     double delx, dely, delz;
     double rsq;
     double volume;
     double h_inv[3][3];
+    int jtag, j0;
+    double ix0, iy0, iz0;
+    double jx0, jy0, jz0, nhx, nhy, nhz, nx, ny, nz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     int ntypes = atom->ntypes + 1;
     int32 *index_map;
@@ -242,14 +246,15 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     firstneigh = list->firstneigh;
     index_map = vap->get_index_map();
 
+    std::cout << std::endl;
+
     // Cell
     auto h_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({3, 3}));
     update_cell<float>(&h_tensor, volume, h_inv);
-    std::cout << "Cell: \n" << h_tensor.matrix<float>() << std::endl;
+    auto h_tensor_matrix = h_tensor.matrix<float>();
 
     // Volume
     auto volume_tensor = Tensor(static_cast<float> (volume));
-    std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
 
     // N_atom_vap
     auto n_atoms_vap_tensor = Tensor(tensorflow::DT_INT32, TensorShape());
@@ -275,9 +280,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         R_tensor_mapped(igsl, 2) = x[ilocal][2];
     }
 
-    std::cout << "R(GSL): \n" << R_tensor->matrix<float>() << std::endl;
-    std::cout << "Nij_max: " << nij_max << std::endl;
-
     auto composition_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({ntypes - 1}));
     for (i = 1; i < ntypes; i++) {
         composition_tensor.tensor<float, 1>()(i - 1) = 0.0;
@@ -299,11 +301,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
     g2_v2gmap_tensor_mapped.setConstant(0);
 
-    int nij = 0;
-    int jtag, j0;
-    double ix0, iy0, iz0;
-    double jx0, jy0, jz0, nhx, nhy, nhz, nx, ny, nz;
-
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
         ix0 = x[i][0];
@@ -316,7 +313,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
         for (jj = 0; jj < jnum; jj++) {
             j = jlist[jj];
-            j &= NEIGHMASK;
+            j &= (unsigned int)NEIGHMASK;
             jtype = atom->type[j];
             jtag = atom->tag[j];
             j0 = jtag - 1;
@@ -338,45 +335,25 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 g2_shift_tensor_mapped(nij, 0) = static_cast<float> (nx);
                 g2_shift_tensor_mapped(nij, 1) = static_cast<float> (ny);
                 g2_shift_tensor_mapped(nij, 2) = static_cast<float> (nz);
-                g2_ilist_tensor_mapped(nij) = static_cast<int32> (index_map[i]);
-                g2_jlist_tensor_mapped(nij) = static_cast<int32> (index_map[j0]);
-                g2_v2gmap_tensor_mapped(nij, 0) = static_cast<int32> (index_map[i]);
-                g2_v2gmap_tensor_mapped(nij, 1) = static_cast<int32> (g2_offset_map[IJ(itype, jtype, ntypes)]);
+                g2_ilist_tensor_mapped(nij) = index_map[i];
+                g2_jlist_tensor_mapped(nij) = index_map[j0];
+                g2_v2gmap_tensor_mapped(nij, 0) = index_map[i];
+                g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[IJ(itype, jtype, ntypes)];
                 nij += 1;
+                if (i < inum && j < inum) {
+                    // `j > i` is always true in Lammps neighbour list.
+                    g2_shift_tensor_mapped(nij, 0) = 0.0f;
+                    g2_shift_tensor_mapped(nij, 1) = 0.0f;
+                    g2_shift_tensor_mapped(nij, 2) = 0.0f;
+                    g2_ilist_tensor_mapped(nij) = index_map[j];
+                    g2_jlist_tensor_mapped(nij) = index_map[i];
+                    g2_v2gmap_tensor_mapped(nij, 0) = index_map[j];
+                    g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[IJ(jtype, itype, ntypes)];
+                    nij += 1;
+                }
             }
         }
     }
-
-    std::cout << "composition: \n" << composition_tensor.vec<float>() << std::endl;
-
-    for (i = 0; i < inum; i++) {
-        ix0 = x[i][0];
-        iy0 = x[i][1];
-        iz0 = x[i][2];
-        itype = atom->type[i];
-        for (j = i + 1; j < inum; j++) {
-            jx0 = x[j][0];
-            jy0 = x[j][1];
-            jz0 = x[j][2];
-            delx = jx0 - ix0;
-            dely = jy0 - iy0;
-            delz = jz0 - iz0;
-            jtype = atom->type[j];
-            rsq = delx*delx + dely*dely + delz*delz;
-            if (rsq < cutforcesq) {
-                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (0.f);
-                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (0.f);
-                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (0.f);
-                g2_ilist_tensor_mapped(nij) = static_cast<int32> (index_map[i]);
-                g2_jlist_tensor_mapped(nij) = static_cast<int32> (index_map[j]);
-                g2_v2gmap_tensor_mapped(nij, 0) = static_cast<int32> (index_map[i]);
-                g2_v2gmap_tensor_mapped(nij, 1) = static_cast<int32> (g2_offset_map[IJ(itype, jtype, ntypes)]);
-                nij += 1;
-            }
-        }
-    }
-
-    std::cout << "Nij: " << nij << std::endl;
 
     auto atom_mask_tensor = Tensor(tensorflow::DT_FLOAT, TensorShape({vap->get_n_atoms_vap()}));
     auto atom_mask_ptr = vap->get_atom_mask();
@@ -384,13 +361,18 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         atom_mask_tensor.tensor<float, 1>()(i) = atom_mask_ptr[i];
     }
 
-    std::cout << "Atom mask: \n" << atom_mask_tensor.vec<float>() << std::endl;
-
     auto row_splits_tensor = Tensor(tensorflow::DT_INT32, TensorShape({ntypes}));
     for (i = 0; i < ntypes; i++) {
         row_splits_tensor.tensor<int32, 1>()(i) = vap->get_row_splits()[i];
     }
 
+    std::cout << "Cell: \n" << std::setprecision(6) << h_tensor.matrix<float>() << std::endl;
+    std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
+    std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
+    std::cout << "Nij_max: " << nij_max << std::endl;
+    std::cout << "composition: \n" << composition_tensor.vec<float>() << std::endl;
+    std::cout << "Nij: " << nij << std::endl;
+    std::cout << "Atom mask: \n" << atom_mask_tensor.vec<float>() << std::endl;
     std::cout << "Row splits: \n" << row_splits_tensor.vec<int32>() << std::endl;
 
     std::vector<Tensor> outputs;
@@ -409,14 +391,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         {"Placeholders/pulay_stress", pulay_stress_tensor},
     });
 
-    for (const auto& key_value_pair: feed_dict) {
-        auto shape = key_value_pair.second.shape();
-        auto dtype = key_value_pair.second.dtype();
-        std::cout << key_value_pair.first << ": " << shape.DebugString() << ", " << dtype << std::endl;
-    }
-
     std::vector<string> run_ops({"Output/Energy/energy:0", "Output/Forces/forces:0"});
-
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
 
     std::cout << status.ToString() << std::endl;
@@ -660,6 +635,8 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             offset += g2_ndim_per_atom;
         }
     }
+
+    std::cout << std::endl;
 }
 
 
