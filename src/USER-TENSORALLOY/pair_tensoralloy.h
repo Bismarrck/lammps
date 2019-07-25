@@ -11,6 +11,7 @@ PairStyle(tensoralloy, PairTensorAlloy)
 #ifndef LMP_PAIR_TENSORALLOY_H
 #define LMP_PAIR_TENSORALLOY_H
 
+#include <atom.h>
 #include "pair.h"
 #include "virtual_atom_approach.h"
 
@@ -42,6 +43,8 @@ namespace LAMMPS_NS {
         int n_gamma;
         int n_zeta;
         bool verbose;
+        int *g4_numneigh;
+
         tensorflow::int32 *g2_offset_map;
         tensorflow::int32 *g4_offset_map;
         VirtualAtomMap *vap;
@@ -50,6 +53,12 @@ namespace LAMMPS_NS {
 
         template <typename T> double update_cell ();
         tensorflow::Status load_graph(const tensorflow::string& filename);
+
+        void get_shift_vector(int i, double &nx, double &ny, double &nz);
+
+        int inline get_local_idx(int i) {
+            return atom->tag[i] - 1;
+        }
 
         int nmax;
         void allocate();
@@ -65,8 +74,6 @@ namespace LAMMPS_NS {
         tensorflow::Tensor *n_atoms_vap_tensor;
         tensorflow::Tensor *pulay_stress_tensor;
         tensorflow::Tensor *composition_tensor;
-        bool composition_initialized;
-
         tensorflow::Tensor *atom_mask_tensor;
         tensorflow::Tensor *row_splits_tensor;
 

@@ -89,6 +89,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     g2_offset_map = nullptr;
     g4_offset_map = nullptr;
+    g4_numneigh = nullptr;
     max_occurs = nullptr;
     vap = nullptr;
     session = nullptr;
@@ -101,8 +102,6 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     composition_tensor = nullptr;
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
-
-    composition_initialized = false;
 
     // Disable log by default.
     verbose = false;
@@ -145,6 +144,9 @@ PairTensorAlloy::~PairTensorAlloy()
     if (use_angular) {
         memory->destroy(g4_offset_map);
         delete [] g4_offset_map;
+
+        memory->destroy(g4_numneigh);
+        delete [] g4_numneigh;
     }
 
     if (allocated) {
@@ -212,12 +214,11 @@ double PairTensorAlloy::update_cell()
         boxyz = domain->yz;
     }
 
+    // Copied from `ase.io.lammpsdata.read_lammps_data`
     double xhilo = (boxxhi - boxxlo) - abs(boxxy) - abs(boxxz);
     double yhilo = (boxyhi - boxylo) - abs(boxyz);
     double zhilo = boxzhi - boxzlo;
-
     auto h_mapped = h_tensor->template tensor<T, 2>();
-
     h_mapped(0, 0) = static_cast<T> (xhilo);
     h_mapped(0, 1) = static_cast<T> (0.0);
     h_mapped(0, 2) = static_cast<T> (0.0);
@@ -228,8 +229,8 @@ double PairTensorAlloy::update_cell()
     h_mapped(2, 1) = static_cast<T> (boxyz);
     h_mapped(2, 2) = static_cast<T> (zhilo);
 
+    // Compute the volume.
     double volume;
-
     if (domain->dimension == 3) {
         volume = domain->xprd * domain->yprd * domain->zprd;
     }
@@ -237,8 +238,8 @@ double PairTensorAlloy::update_cell()
         volume = domain->xprd * domain->yprd;
     }
 
+    // Compute the inverse matrix of `h`
     double ivol = 1.0 / volume;
-
     h_inv[0][0] = (h_mapped(1, 1) * h_mapped(2, 2) - h_mapped(2, 1) * h_mapped(1, 2)) * ivol;
     h_inv[0][1] = (h_mapped(0, 2) * h_mapped(2, 1) - h_mapped(0, 1) * h_mapped(2, 2)) * ivol;
     h_inv[0][2] = (h_mapped(0, 1) * h_mapped(1, 2) - h_mapped(0, 2) * h_mapped(1, 1)) * ivol;
@@ -253,21 +254,42 @@ double PairTensorAlloy::update_cell()
 }
 
 /* ----------------------------------------------------------------------
-   check if allocated, since class can be destructed when incomplete
+   Calculate the shift vector (nx, ny, nz) of atom `i`.
+------------------------------------------------------------------------- */
+
+void PairTensorAlloy::get_shift_vector(int i, double &nx, double &ny, double &nz)
+{
+    double nhx = atom->x[i][0] - atom->x[atom->tag[i] - 1][0];
+    double nhy = atom->x[i][1] - atom->x[atom->tag[i] - 1][1];
+    double nhz = atom->x[i][2] - atom->x[atom->tag[i] - 1][2];
+
+    nx = nhx * h_inv[0][0] + nhy * h_inv[1][0] + nhz * h_inv[2][0];
+    ny = nhx * h_inv[0][1] + nhy * h_inv[1][1] + nhz * h_inv[2][1];
+    nz = nhx * h_inv[0][2] + nhy * h_inv[1][2] + nhz * h_inv[2][2];
+}
+
+/* ----------------------------------------------------------------------
+   The `compute` method.
 ------------------------------------------------------------------------- */
 
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-    unsigned int i, j;
-    int ii, jj, inum, jnum, itype, jtype, ilocal, igsl;
-    int nij_max;
+    unsigned int i, j, k;
+    int ii, jj, kk, inum, jnum, itype, jtype, ktype, ilocal, igsl;
+    int nij_max = 0;
     int nij = 0;
-    double delx, dely, delz;
-    double rsq;
+    int nijk = 0;
+    int nijk_max = 0;
+    int offset;
+    double rijx, rijy, rijz;
+    double rikx, riky, rikz;
+    double rjkx, rjky, rjkz;
+    double rij2, rjk2, rik2;
     double volume;
-    int jtag, j0;
-    double ix0, iy0, iz0;
-    double jx0, jy0, jz0, nhx, nhy, nhz, nx, ny, nz;
+    int i0, j0, k0;
+    double xi0, yi0, zi0;
+    double jnx, jny, jnz;
+    double knx, kny, knz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     const int32 *index_map;
 
@@ -282,7 +304,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         nmax = atom->nmax;
     }
 
-    double **x = atom->x;
+    double **R = atom->x;
 
     inum = list->inum;
     ilist = list->ilist;
@@ -307,9 +329,9 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         igsl = index_map[ilocal];
         jnum = numneigh[ilocal];
         nij_max += jnum;
-        R_tensor_mapped(igsl, 0) = x[ilocal][0];
-        R_tensor_mapped(igsl, 1) = x[ilocal][1];
-        R_tensor_mapped(igsl, 2) = x[ilocal][2];
+        R_tensor_mapped(igsl, 0) = R[ilocal][0];
+        R_tensor_mapped(igsl, 1) = R[ilocal][1];
+        R_tensor_mapped(igsl, 2) = R[ilocal][2];
     }
 
     auto g2_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nij_max, 3}));
@@ -330,46 +352,41 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
-        ix0 = x[i][0];
-        iy0 = x[i][1];
-        iz0 = x[i][2];
+        xi0 = R[i][0];
+        yi0 = R[i][1];
+        zi0 = R[i][2];
         itype = atom->type[i];
         jlist = firstneigh[i];
         jnum = numneigh[i];
-
-        if (!composition_initialized) {
-            composition_tensor->tensor<float, 1>()(itype - 1) += 1.0f;
-        }
 
         for (jj = 0; jj < jnum; jj++) {
             j = jlist[jj];
             j &= (unsigned)NEIGHMASK;
             jtype = atom->type[j];
-            jtag = atom->tag[j];
-            j0 = jtag - 1;
-            jx0 = x[j0][0];
-            jy0 = x[j0][1];
-            jz0 = x[j0][2];
-            delx = x[j][0] - ix0;
-            dely = x[j][1] - iy0;
-            delz = x[j][2] - iz0;
-            rsq = delx*delx + dely*dely + delz*delz;
+            j0 = get_local_idx(j);
+            rijx = R[j][0] - xi0;
+            rijy = R[j][1] - yi0;
+            rijz = R[j][2] - zi0;
+            rij2 = rijx*rijx + rijy*rijy + rijz*rijz;
 
-            if (rsq < cutforcesq) {
-                nhx = x[j][0] - jx0;
-                nhy = x[j][1] - jy0;
-                nhz = x[j][2] - jz0;
-                nx = nhx * h_inv[0][0] + nhy * h_inv[1][0] + nhz * h_inv[2][0];
-                ny = nhx * h_inv[0][1] + nhy * h_inv[1][1] + nhz * h_inv[2][1];
-                nz = nhx * h_inv[0][2] + nhy * h_inv[1][2] + nhz * h_inv[2][2];
-                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (nx);
-                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (ny);
-                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (nz);
+            if (rij2 < cutforcesq) {
+                get_shift_vector(j, jnx, jny, jnz);
+
+                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (jnx);
+                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (jny);
+                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (jnz);
                 g2_ilist_tensor_mapped(nij) = index_map[i];
                 g2_jlist_tensor_mapped(nij) = index_map[j0];
+
+                offset = IJ(itype, jtype, n_lmp_types);
                 g2_v2gmap_tensor_mapped(nij, 0) = index_map[i];
-                g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[IJ(itype, jtype, n_lmp_types)];
+                g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                 nij += 1;
+
+                if (use_angular) {
+                    g4_numneigh[i] += 1;
+                }
+
                 if (i < inum && j < inum) {
                     // `j > i` is always true in Lammps neighbour list.
                     g2_shift_tensor_mapped(nij, 0) = 0.0f;
@@ -377,28 +394,20 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                     g2_shift_tensor_mapped(nij, 2) = 0.0f;
                     g2_ilist_tensor_mapped(nij) = index_map[j];
                     g2_jlist_tensor_mapped(nij) = index_map[i];
+
+                    offset = IJ(jtype, itype, n_lmp_types);
                     g2_v2gmap_tensor_mapped(nij, 0) = index_map[j];
-                    g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[IJ(jtype, itype, n_lmp_types)];
+                    g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                     nij += 1;
+
+                    if (use_angular) {
+                        g4_numneigh[j] += 1;
+                    }
                 }
             }
         }
     }
 
-    composition_initialized = true;
-
-    if (verbose) {
-        std::cout << "Cell: \n" << std::setprecision(6) << h_tensor->matrix<float>() << std::endl;
-        std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
-        std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
-        std::cout << "Nij_max: " << nij_max << std::endl;
-        std::cout << "composition: \n" << composition_tensor->vec<float>() << std::endl;
-        std::cout << "Nij: " << nij << std::endl;
-        std::cout << "Atom mask: \n" << atom_mask_tensor->vec<float>() << std::endl;
-        std::cout << "Row splits: \n" << row_splits_tensor->vec<int32>() << std::endl;
-    }
-
-    std::vector<Tensor> outputs;
     std::vector<std::pair<string, Tensor>> feed_dict({
         {"Placeholders/positions", *R_tensor},
         {"Placeholders/cells", *h_tensor},
@@ -411,9 +420,148 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         {"Placeholders/g2.jlist", *g2_jlist_tensor},
         {"Placeholders/g2.shift", *g2_shift_tensor},
         {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
-        {"Placeholders/pulay_stress", *pulay_stress_tensor},
+        {"Placeholders/pulay_stress", *pulay_stress_tensor}
     });
 
+    if (verbose) {
+        std::cout << "Cell: \n" << std::setprecision(6) << h_tensor->matrix<float>() << std::endl;
+        std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
+        std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
+        std::cout << "Nij_max: " << nij_max << std::endl;
+        std::cout << "composition: \n" << composition_tensor->vec<float>() << std::endl;
+        std::cout << "Nij: " << nij << std::endl;
+        std::cout << "Atom mask: \n" << atom_mask_tensor->vec<float>() << std::endl;
+        std::cout << "Row splits: \n" << row_splits_tensor->vec<int32>() << std::endl;
+    }
+
+    Tensor *g4_v2gmap_tensor = nullptr;
+    Tensor *g4_ilist_tensor = nullptr;
+    Tensor *g4_jlist_tensor = nullptr;
+    Tensor *g4_klist_tensor = nullptr;
+    Tensor *g4_ij_shift_tensor = nullptr;
+    Tensor *g4_ik_shift_tensor = nullptr;
+    Tensor *g4_jk_shift_tensor = nullptr;
+
+    if (use_angular) {
+
+        for (i = 0; i < atom->nlocal; i++) {
+            jnum = g4_numneigh[i];
+            nijk_max += (jnum - 1) * jnum / 2;
+        }
+
+        if (verbose) {
+            std::cout << "Nijk_max: " << nijk_max << std::endl;
+        }
+
+        g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_ij_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
+        g4_ik_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
+        g4_jk_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
+        g4_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nijk_max, 2}));
+
+        auto g4_ilist_tensor_mapped = g4_ilist_tensor->tensor<int32, 1>();
+        auto g4_jlist_tensor_mapped = g4_jlist_tensor->tensor<int32, 1>();
+        auto g4_klist_tensor_mapped = g4_klist_tensor->tensor<int32, 1>();
+        auto g4_ij_shift_tensor_mapped = g4_ij_shift_tensor->tensor<float, 2>();
+        auto g4_ik_shift_tensor_mapped = g4_ik_shift_tensor->tensor<float, 2>();
+        auto g4_jk_shift_tensor_mapped = g4_jk_shift_tensor->tensor<float, 2>();
+        auto g4_v2gmap_tensor_mapped = g4_v2gmap_tensor->tensor<int32, 2>();
+
+        g4_ilist_tensor_mapped.setConstant(0);
+        g4_jlist_tensor_mapped.setConstant(0);
+        g4_klist_tensor_mapped.setConstant(0);
+        g4_ij_shift_tensor_mapped.setConstant(0.0f);
+        g4_ik_shift_tensor_mapped.setConstant(0.0f);
+        g4_jk_shift_tensor_mapped.setConstant(0.0f);
+        g4_v2gmap_tensor_mapped.setConstant(0);
+
+        for (ii = 0; i < inum; i++) {
+            i = ilist[ii];
+            i0 = get_local_idx(i);
+            xi0 = R[i0][0];
+            yi0 = R[i0][1];
+            zi0 = R[i0][2];
+            itype = atom->type[i];
+            jlist = firstneigh[i];
+            jnum = numneigh[i];
+
+            for (jj = 0; jj < jnum; jj++) {
+                j = jlist[jj];
+                j &= (unsigned)NEIGHMASK;
+
+                rijx = R[j][0] - xi0;
+                rijy = R[j][1] - yi0;
+                rijz = R[j][2] - zi0;
+                rij2 = rijx*rijx + rijy*rijy + rijz*rijz;
+                if (rij2 < cutforcesq) {
+                    for (kk = jj + 1; kk < jnum; kk++) {
+                        k = jlist[kk];
+                        k &= (unsigned)NEIGHMASK;
+
+                        rikx = R[k][0] - xi0;
+                        riky = R[k][1] - yi0;
+                        rikz = R[k][2] - zi0;
+                        rik2 = rikx * rijx + riky * riky + rikz * rikz;
+
+                        rjkx = R[j][0] - R[k][0];
+                        rjky = R[j][2] - R[k][1];
+                        rjkz = R[j][1] - R[k][2];
+                        rjk2 = rjkx * rjkx + rjky * rjky + rjkz * rjkz;
+
+                        if (rik2 < cutforcesq && rjk2 < cutforcesq) {
+                            jtype = atom->type[j];
+                            j0 = get_local_idx(j);
+                            get_shift_vector(j, jnx, jny, jnz);
+
+                            ktype = atom->type[k];
+                            k0 = get_local_idx(k);
+                            get_shift_vector(k, knx, kny, knz);
+
+                            g4_ilist_tensor_mapped(nijk) = index_map[i0];
+                            g4_jlist_tensor_mapped(nijk) = index_map[j0];
+                            g4_klist_tensor_mapped(nijk) = index_map[k0];
+
+                            g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<float> (jnx);
+                            g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<float> (jny);
+                            g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<float> (jnz);
+
+                            g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx);
+                            g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny);
+                            g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz);
+
+                            g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx - jnx);
+                            g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny - jny);
+                            g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
+
+                            offset = IJK(itype, jtype, ktype, n_lmp_types);
+                            g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i];
+                            g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
+
+                            nijk += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        std::vector<std::pair<string, Tensor>> addon({
+            {"Placeholders/g4.v2g_map", *g4_v2gmap_tensor},
+            {"Placeholders/g4.ij.ilist", *g4_ilist_tensor},
+            {"Placeholders/g4.ij.jlist", *g4_jlist_tensor},
+            {"Placeholders/g4.ik.ilist", *g4_ilist_tensor},
+            {"Placeholders/g4.ik.klist", *g4_klist_tensor},
+            {"Placeholders/g4.jk.jlist", *g4_jlist_tensor},
+            {"Placeholders/g4.jk.klist", *g4_klist_tensor},
+            {"Placeholders/g4.shift.ij", *g4_ij_shift_tensor},
+            {"Placeholders/g4.shift.ik", *g4_ik_shift_tensor},
+            {"Placeholders/g4.shift.jk", *g4_jk_shift_tensor},
+        });
+        feed_dict.insert(std::end(feed_dict), std::begin(addon), std::end(addon));
+    }
+
+    std::vector<Tensor> outputs;
     std::vector<string> run_ops({
         "Output/Energy/energy:0",
         "Output/Forces/forces:0",
@@ -454,6 +602,16 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     delete g2_ilist_tensor;
     delete g2_jlist_tensor;
     delete g2_v2gmap_tensor;
+
+    if (use_angular) {
+        delete g4_v2gmap_tensor;
+        delete g4_ilist_tensor;
+        delete g4_jlist_tensor;
+        delete g4_klist_tensor;
+        delete g4_ij_shift_tensor;
+        delete g4_ik_shift_tensor;
+        delete g4_jk_shift_tensor;
+    }
 }
 
 /* ----------------------------------------------------------------------
@@ -510,6 +668,9 @@ void PairTensorAlloy::allocate()
     // Composition tensor
     composition_tensor = new Tensor(DT_FLOAT, TensorShape({n}));
     composition_tensor->flat<float>().setConstant(0.0);
+    for (i = 0; i < atom->nlocal; i++) {
+        composition_tensor->flat<float>()(atom->type[i] - 1) += 1.0f;
+    }
 }
 
 /* ----------------------------------------------------------------------
@@ -637,23 +798,20 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         error->all(FLERR, "Could not decode tensor <Transformer/params:0>");
     }
 
-    int32 n_types = n_elements + 1;
-
-    memory->destroy(element_map);
-    delete [] element_map;
+    int32 n_lmp_types = n_elements + 1;
 
     if (narg != 1 + n_elements)
         error->all(FLERR,"Incorrect args for pair coefficients");
 
-    memory->create(max_occurs, n_types, "pair:max_occurs");
-    for (i = 0; i < n_types; i++)
+    memory->create(max_occurs, n_lmp_types, "pair:max_occurs");
+    for (i = 0; i < n_lmp_types; i++)
         max_occurs[i] = 0;
     for (i = 0; i < atom->natoms; i++)
         max_occurs[atom->type[i]] ++;
-    for (i = 1; i < n_types; i++)
+    for (i = 1; i < n_lmp_types; i++)
         if (max_occurs[i] == 0)
             max_occurs[i] = 1;
-    for (i = 0; i < n_types; i++)
+    for (i = 0; i < n_lmp_types; i++)
         std::cout << "MaxOccur of " << symbols[i] << ": " << max_occurs[i] << std::endl;
 
     // Initialize the Virtual-Atom Map
@@ -672,17 +830,17 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     int32 offset = 0;
     int32 pos = 0;
 
-    memory->create(g2_offset_map, n_types * n_types, "pair:g2_offset_map");
-    for (i = 1; i < n_types; i++) {
-        pos = IJ(i, i, n_types);
-        g2_offset_map[i * n_types + i] = offset;
+    memory->create(g2_offset_map, n_lmp_types * n_lmp_types, "pair:g2_offset_map");
+    for (i = 1; i < n_lmp_types; i++) {
+        pos = IJ(i, i, n_lmp_types);
+        g2_offset_map[i * n_lmp_types + i] = offset;
         std::cout << symbols[i] << symbols[i] << ": " << g2_offset_map[pos] << std::endl;
         offset += g2_size;
-        for (j = 1; j < n_types; j++) {
+        for (j = 1; j < n_lmp_types; j++) {
             if (j == i) {
                 continue;
             }
-            pos = IJ(i, j, n_types);
+            pos = IJ(i, j, n_lmp_types);
             g2_offset_map[pos] = offset;
             std::cout << symbols[i] << symbols[j] << ": " << g2_offset_map[pos] << std::endl;
             offset += g2_size;
@@ -691,13 +849,13 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     }
 
     if (use_angular) {
-        size_t alloc_size = n_types * n_types * n_types;
+        size_t alloc_size = n_lmp_types * n_lmp_types * n_lmp_types;
         memory->create(g4_offset_map, alloc_size, "pair:g4_offset_map");
         offset = g2_ndim_per_atom;
-        for (i = 1; i < n_types; i++) {
-            for (j = 1; j < n_types; j++) {
-                for (k = j; k < n_types; k++) {
-                    pos = IJK(i, j, k, n_types);
+        for (i = 1; i < n_lmp_types; i++) {
+            for (j = 1; j < n_lmp_types; j++) {
+                for (k = j; k < n_lmp_types; k++) {
+                    pos = IJK(i, j, k, n_lmp_types);
                     g4_offset_map[pos] = offset;
                     std::cout << symbols[i] << symbols[j] << symbols[k] << ": " << g4_offset_map[pos] << std::endl;
                     offset += g4_size;
@@ -705,21 +863,25 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             }
             offset += g2_ndim_per_atom;
         }
+
+        memory->create(g4_numneigh, atom->nlocal, "pair:g4_numneigh");
+        for (i = 0; i < atom->nlocal; i++)
+            g4_numneigh[i] = 0;
     }
 
     // Allocate arrays and tensors.
     allocate();
 
     // Set atomic masses
-    double atom_mass[n_types];
-    for (i = 0; i < n_types; i++) {
-        atom_mass[i + 1] = 1.0;
+    double atom_mass[n_lmp_types];
+    for (i = 0; i < n_lmp_types; i++) {
+        atom_mass[i] = 1.0;
     }
     atom->set_mass(atom_mass);
 
     // setflag
-    for (i = 1; i < n_types; i++) {
-        for (j = i; j < n_types; j++) {
+    for (i = 1; i < n_lmp_types; i++) {
+        for (j = i; j < n_lmp_types; j++) {
             setflag[i][j] = 1;
         }
     }
