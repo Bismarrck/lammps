@@ -54,9 +54,10 @@ namespace LAMMPS_NS {
         template <typename T> double update_cell ();
         tensorflow::Status load_graph(const tensorflow::string& filename);
 
-        void get_shift_vector(int i, double &nx, double &ny, double &nz);
+        void get_shift_vector(const int i, double &nx, double &ny, double &nz);
+        double get_interatomic_distance(const int i, const int j, bool square=true);
 
-        int inline get_local_idx(int i) {
+        int inline get_local_idx(const int i) {
             return atom->tag[i] - 1;
         }
 
@@ -77,6 +78,7 @@ namespace LAMMPS_NS {
         tensorflow::Tensor *atom_mask_tensor;
         tensorflow::Tensor *row_splits_tensor;
 
+        double dynamic_bytes;
         double tensors_memory_usage();
     };
 }

@@ -23,8 +23,6 @@
 #include <iostream>
 #include <iomanip>
 #include <domain.h>
-#include "jsoncpp/json/json.h"
-#include "pair_tensoralloy.h"
 #include "atom.h"
 #include "force.h"
 #include "comm.h"
@@ -53,6 +51,10 @@
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/util/command_line_flags.h"
+
+#include "jsoncpp/json/json.h"
+#include "cnpy/cnpy.h"
+#include "pair_tensoralloy.h"
 
 using namespace LAMMPS_NS;
 
@@ -257,15 +259,32 @@ double PairTensorAlloy::update_cell()
    Calculate the shift vector (nx, ny, nz) of atom `i`.
 ------------------------------------------------------------------------- */
 
-void PairTensorAlloy::get_shift_vector(int i, double &nx, double &ny, double &nz)
+void PairTensorAlloy::get_shift_vector(const int i, double &nx, double &ny, double &nz)
 {
     double nhx = atom->x[i][0] - atom->x[atom->tag[i] - 1][0];
     double nhy = atom->x[i][1] - atom->x[atom->tag[i] - 1][1];
     double nhz = atom->x[i][2] - atom->x[atom->tag[i] - 1][2];
 
-    nx = nhx * h_inv[0][0] + nhy * h_inv[1][0] + nhz * h_inv[2][0];
-    ny = nhx * h_inv[0][1] + nhy * h_inv[1][1] + nhz * h_inv[2][1];
-    nz = nhx * h_inv[0][2] + nhy * h_inv[1][2] + nhz * h_inv[2][2];
+    nx = round(nhx * h_inv[0][0] + nhy * h_inv[1][0] + nhz * h_inv[2][0]);
+    ny = round(nhx * h_inv[0][1] + nhy * h_inv[1][1] + nhz * h_inv[2][1]);
+    nz = round(nhx * h_inv[0][2] + nhy * h_inv[1][2] + nhz * h_inv[2][2]);
+}
+
+/* ----------------------------------------------------------------------
+   Calculate the interatomic distance of (i, j).
+------------------------------------------------------------------------- */
+
+double PairTensorAlloy::get_interatomic_distance(const int i, const int j, bool square)
+{
+    double rsq;
+    double rijx, rijy, rijz;
+
+    rijx = atom->x[j][0] - atom->x[i][0];
+    rijy = atom->x[j][1] - atom->x[i][1];
+    rijz = atom->x[j][2] - atom->x[i][2];
+    rsq = rijx*rijx + rijy*rijy + rijz*rijz;
+
+    return square ? rsq : sqrt(rsq);
 }
 
 /* ----------------------------------------------------------------------
@@ -281,17 +300,14 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     int nijk = 0;
     int nijk_max = 0;
     int offset;
-    double rijx, rijy, rijz;
-    double rikx, riky, rikz;
-    double rjkx, rjky, rjkz;
-    double rij2, rjk2, rik2;
+    double rsq;
     double volume;
     int i0, j0, k0;
-    double xi0, yi0, zi0;
     double jnx, jny, jnz;
     double knx, kny, knz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     const int32 *index_map;
+    bool **shortneigh;
 
     // The atom type starts from 1 in LAMMPS. So `n_lmp_types` should be `ntypes + 1`.
     int n_lmp_types = atom->ntypes + 1;
@@ -311,6 +327,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     numneigh = list->numneigh;
     firstneigh = list->firstneigh;
     index_map = vap->get_index_map();
+    shortneigh = new bool* [inum];
 
     // Cell
     volume = update_cell<float>();
@@ -352,24 +369,31 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
-        xi0 = R[i][0];
-        yi0 = R[i][1];
-        zi0 = R[i][2];
         itype = atom->type[i];
         jlist = firstneigh[i];
         jnum = numneigh[i];
+        shortneigh[i] = new bool [jnum + ii];
 
         for (jj = 0; jj < jnum; jj++) {
             j = jlist[jj];
             j &= (unsigned)NEIGHMASK;
-            jtype = atom->type[j];
-            j0 = get_local_idx(j);
-            rijx = R[j][0] - xi0;
-            rijy = R[j][1] - yi0;
-            rijz = R[j][2] - zi0;
-            rij2 = rijx*rijx + rijy*rijy + rijz*rijz;
+            shortneigh[ii][jj] = false;
+            rsq = get_interatomic_distance(i, j, true);
 
-            if (rij2 < cutforcesq) {
+//        for (jj = 0; jj < jnum + ii; jj++) {
+//            if (jj < jnum) {
+//                j = jlist[jj];
+//                j &= (unsigned)NEIGHMASK;
+//            } else {
+//                j = jj - jnum;
+//            }
+//            shortneigh[ii][jj] = false;
+//            rsq = get_interatomic_distance(i, j);
+
+            if (rsq < cutforcesq) {
+                shortneigh[ii][jj] = true;
+                jtype = atom->type[j];
+                j0 = get_local_idx(j);
                 get_shift_vector(j, jnx, jny, jnz);
 
                 g2_shift_tensor_mapped(nij, 0) = static_cast<float> (jnx);
@@ -477,43 +501,42 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         g4_jk_shift_tensor_mapped.setConstant(0.0f);
         g4_v2gmap_tensor_mapped.setConstant(0);
 
-        for (ii = 0; i < inum; i++) {
+        for (ii = 0; ii < inum; ii++) {
             i = ilist[ii];
             i0 = get_local_idx(i);
-            xi0 = R[i0][0];
-            yi0 = R[i0][1];
-            zi0 = R[i0][2];
             itype = atom->type[i];
             jlist = firstneigh[i];
             jnum = numneigh[i];
 
-            for (jj = 0; jj < jnum; jj++) {
-                j = jlist[jj];
-                j &= (unsigned)NEIGHMASK;
+            for (jj = 0; jj < jnum + ii; jj++) {
+                if (jj < jnum) {
+                    j = jlist[jj];
+                    j &= (unsigned)NEIGHMASK;
+                } else {
+                    j = jj - jnum;
+                }
 
-                rijx = R[j][0] - xi0;
-                rijy = R[j][1] - yi0;
-                rijz = R[j][2] - zi0;
-                rij2 = rijx*rijx + rijy*rijy + rijz*rijz;
-                if (rij2 < cutforcesq) {
+                if (shortneigh[ii][jj]) {
+
+                    jtype = atom->type[j];
+                    j0 = get_local_idx(j);
+                    get_shift_vector(j, jnx, jny, jnz);
+
                     for (kk = jj + 1; kk < jnum; kk++) {
                         k = jlist[kk];
                         k &= (unsigned)NEIGHMASK;
 
-                        rikx = R[k][0] - xi0;
-                        riky = R[k][1] - yi0;
-                        rikz = R[k][2] - zi0;
-                        rik2 = rikx * rijx + riky * riky + rikz * rikz;
+//                        rikx = R[k][0] - xi0;
+//                        riky = R[k][1] - yi0;
+//                        rikz = R[k][2] - zi0;
+//                        rik2 = rikx * rijx + riky * riky + rikz * rikz;
+//
+//                        rjkx = R[j][0] - R[k][0];
+//                        rjky = R[j][2] - R[k][1];
+//                        rjkz = R[j][1] - R[k][2];
+//                        rjk2 = rjkx * rjkx + rjky * rjky + rjkz * rjkz;
 
-                        rjkx = R[j][0] - R[k][0];
-                        rjky = R[j][2] - R[k][1];
-                        rjkz = R[j][1] - R[k][2];
-                        rjk2 = rjkx * rjkx + rjky * rjky + rjkz * rjkz;
-
-                        if (rik2 < cutforcesq && rjk2 < cutforcesq) {
-                            jtype = atom->type[j];
-                            j0 = get_local_idx(j);
-                            get_shift_vector(j, jnx, jny, jnz);
+                        if (shortneigh[ii][kk]) {
 
                             ktype = atom->type[k];
                             k0 = get_local_idx(k);
@@ -536,15 +559,91 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                             g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
 
                             offset = IJK(itype, jtype, ktype, n_lmp_types);
-                            g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i];
+                            g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
                             g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
 
                             nijk += 1;
+
+                            printf("%2d, %2d, %2d, ( % 2.0f, % 2.0f, % 2.0f ), ( % 2.0f, % 2.0f, % 2.0f ), ( % 2.0f, % 2.0f, % 2.0f )\n",
+                                    index_map[i0], index_map[j0], index_map[k0],
+                                    jnx, jny, jnz, knx, kny, knz, knx - jnx, kny - jny, knz - jnz);
+
+                            if (j < inum || k < inum) {
+
+                                g4_ilist_tensor_mapped(nijk) = index_map[j0];
+                                g4_jlist_tensor_mapped(nijk) = index_map[i0];
+                                g4_klist_tensor_mapped(nijk) = index_map[k0];
+
+                                g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<float> (jnx);
+                                g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<float> (jny);
+                                g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<float> (jnz);
+
+                                g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx);
+                                g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny);
+                                g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz);
+
+                                g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx - jnx);
+                                g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny - jny);
+                                g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
+
+                                offset = IJK(itype, jtype, ktype, n_lmp_types);
+                                g4_v2gmap_tensor_mapped(nijk, 0) = index_map[j0];
+                                g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
+
+                                nijk += 1;
+
+                            }
                         }
                     }
                 }
             }
         }
+
+        std::cout << "nijk_max: " << nijk_max << std::endl;
+        std::cout << "nijk: " << nijk << std::endl;
+
+        cnpy::npy_save<int32>(
+                "g4.ilist.npy",
+                g4_ilist_tensor->flat<int32>().data(),
+                {static_cast<size_t>(nijk_max)},
+                "w");
+        std::cout << "g4.ilist.npy" << std::endl;
+        cnpy::npy_save<int32>(
+                "g4.jlist.npy",
+                g4_jlist_tensor->flat<int32>().data(),
+                {static_cast<size_t>(nijk_max)},
+                "w");
+        std::cout << "g4.jlist.npy" << std::endl;
+        cnpy::npy_save<int32>(
+                "g4.klist.npy",
+                g4_klist_tensor->flat<int32>().data(),
+                {static_cast<size_t>(nijk_max)},
+                "w");
+        std::cout << "g4.klist.npy" << std::endl;
+        cnpy::npy_save<float>(
+                "g4.ijSlist.npy",
+                g4_ij_shift_tensor->flat<float>().data(),
+                {static_cast<size_t>(nijk_max), 3},
+                "w");
+        std::cout << "g4.ijSlist.npy" << std::endl;
+        cnpy::npy_save<float>(
+                "g4.ikSlist.npy",
+                g4_ik_shift_tensor->flat<float>().data(),
+                {static_cast<size_t>(nijk_max), 3},
+                "w");
+        std::cout << "g4.ikSlist.npy" << std::endl;
+        cnpy::npy_save<float>(
+                "g4.jkSlist.npy",
+                g4_jk_shift_tensor->flat<float>().data(),
+                {static_cast<size_t>(nijk_max), 3},
+                "w");
+        std::cout << "g4.jkSlist.npy" << std::endl;
+        cnpy::npy_save<int32>(
+                "g4.v2g_map.npy",
+                g4_v2gmap_tensor->flat<int32>().data(),
+                {static_cast<size_t>(nijk_max), 2},
+                "w");
+        std::cout << "g4.v2g_map.npy" << std::endl;
 
         std::vector<std::pair<string, Tensor>> addon({
             {"Placeholders/g4.v2g_map", *g4_v2gmap_tensor},
@@ -598,12 +697,31 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     }
     vflag_fdotr = 0;
 
+    dynamic_bytes = 0;
+    dynamic_bytes += g2_shift_tensor->TotalBytes();
+    dynamic_bytes += g2_ilist_tensor->TotalBytes();
+    dynamic_bytes += g2_jlist_tensor->TotalBytes();
+    dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
+
     delete g2_shift_tensor;
     delete g2_ilist_tensor;
     delete g2_jlist_tensor;
     delete g2_v2gmap_tensor;
 
+    for (i = 0; i < inum; i++)
+        delete [] shortneigh[i];
+    delete [] shortneigh;
+
     if (use_angular) {
+
+        dynamic_bytes += g4_v2gmap_tensor->TotalBytes();
+        dynamic_bytes += g4_ilist_tensor->TotalBytes();
+        dynamic_bytes += g4_jlist_tensor->TotalBytes();
+        dynamic_bytes += g4_klist_tensor->TotalBytes();
+        dynamic_bytes += g4_ij_shift_tensor->TotalBytes();
+        dynamic_bytes += g4_ik_shift_tensor->TotalBytes();
+        dynamic_bytes += g4_jk_shift_tensor->TotalBytes();
+
         delete g4_v2gmap_tensor;
         delete g4_ilist_tensor;
         delete g4_jlist_tensor;
@@ -635,12 +753,15 @@ void PairTensorAlloy::allocate()
             setflag[i][j] = 0;
     memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
 
+    // Lattice
     h_tensor = new Tensor(DT_FLOAT, TensorShape({3, 3}));
     h_tensor->tensor<float, 2>().setConstant(0.f);
 
+    // Positions
     R_tensor = new Tensor(DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
     R_tensor->tensor<float, 2>().setConstant(0.f);
 
+    // Volume
     volume_tensor = new Tensor(DT_FLOAT, TensorShape({}));
 
     // row splits tensor
@@ -757,6 +878,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         std::cout << "Successfully parsed tensor <Transformer/params:0>" << std::endl;
 
         cutmax = jsonData["rc"].asDouble();
+        // cutmax = 3.0;
         use_angular = jsonData["angular"].asBool();
         n_eta = jsonData["eta"].size();
         n_omega = jsonData["omega"].size();
@@ -925,6 +1047,7 @@ double PairTensorAlloy::tensors_memory_usage()
     bytes += pulay_stress_tensor->TotalBytes();
     bytes += atom_mask_tensor->TotalBytes();
     bytes += composition_tensor->TotalBytes();
+    bytes += dynamic_bytes;
     return bytes;
 }
 
