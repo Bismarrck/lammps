@@ -53,7 +53,6 @@
 #include "tensorflow/core/util/command_line_flags.h"
 
 #include "jsoncpp/json/json.h"
-#include "cnpy/cnpy.h"
 #include "pair_tensoralloy.h"
 
 using namespace LAMMPS_NS;
@@ -104,9 +103,6 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     composition_tensor = nullptr;
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
-
-    // Disable log by default.
-    verbose = false;
 
     // set comm size needed by this Pair
     comm_forward = 0;
@@ -409,8 +405,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         }
     }
 
-    std::cout << "nij: " << nij << std::endl;
-
     std::vector<std::pair<string, Tensor>> feed_dict({
         {"Placeholders/positions", *R_tensor},
         {"Placeholders/cells", *h_tensor},
@@ -426,17 +420,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         {"Placeholders/pulay_stress", *pulay_stress_tensor}
     });
 
-    if (verbose) {
-        std::cout << "Cell: \n" << std::setprecision(6) << h_tensor->matrix<float>() << std::endl;
-        std::cout << "Volume: " << std::setprecision(6) << volume << std::endl;
-        std::cout << "positions: \n" << std::setprecision(6) << R_tensor->matrix<float>() << std::endl;
-        std::cout << "Nij_max: " << nij_max << std::endl;
-        std::cout << "composition: \n" << composition_tensor->vec<float>() << std::endl;
-        std::cout << "Nij: " << nij << std::endl;
-        std::cout << "Atom mask: \n" << atom_mask_tensor->vec<float>() << std::endl;
-        std::cout << "Row splits: \n" << row_splits_tensor->vec<int32>() << std::endl;
-    }
-
     Tensor *g4_v2gmap_tensor = nullptr;
     Tensor *g4_ilist_tensor = nullptr;
     Tensor *g4_jlist_tensor = nullptr;
@@ -446,14 +429,9 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     Tensor *g4_jk_shift_tensor = nullptr;
 
     if (use_angular) {
-
         for (i = 0; i < atom->nlocal; i++) {
             jnum = g4_numneigh[i];
             nijk_max += (jnum - 1) * jnum / 2;
-        }
-
-        if (verbose) {
-            std::cout << "Nijk_max: " << nijk_max << std::endl;
         }
 
         g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
@@ -495,28 +473,20 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                     j = jj - jnum;
                 }
 
-                if (shortneigh[ii][jj]) {
-
+                if (shortneigh[i][jj]) {
                     jtype = atom->type[j];
                     j0 = get_local_idx(j);
                     get_shift_vector(j, jnx, jny, jnz);
 
-                    for (kk = jj + 1; kk < jnum; kk++) {
-                        k = jlist[kk];
-                        k &= (unsigned)NEIGHMASK;
+                    for (kk = jj + 1; kk < jnum + ii; kk++) {
+                        if (kk < jnum) {
+                            k = jlist[kk];
+                            k &= (unsigned)NEIGHMASK;
+                        } else {
+                            k = kk - jnum;
+                        }
 
-//                        rikx = R[k][0] - xi0;
-//                        riky = R[k][1] - yi0;
-//                        rikz = R[k][2] - zi0;
-//                        rik2 = rikx * rijx + riky * riky + rikz * rikz;
-//
-//                        rjkx = R[j][0] - R[k][0];
-//                        rjky = R[j][2] - R[k][1];
-//                        rjkz = R[j][1] - R[k][2];
-//                        rjk2 = rjkx * rjkx + rjky * rjky + rjkz * rjkz;
-
-                        if (shortneigh[ii][kk]) {
-
+                        if (shortneigh[i][kk]) {
                             ktype = atom->type[k];
                             k0 = get_local_idx(k);
                             get_shift_vector(k, knx, kny, knz);
@@ -542,88 +512,11 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                             g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
 
                             nijk += 1;
-
-                            printf("%2d, %2d, %2d, ( % 2.0f, % 2.0f, % 2.0f ), ( % 2.0f, % 2.0f, % 2.0f ), ( % 2.0f, % 2.0f, % 2.0f )\n",
-                                    index_map[i0], index_map[j0], index_map[k0],
-                                    jnx, jny, jnz, knx, kny, knz, knx - jnx, kny - jny, knz - jnz);
-
-                            if (j < inum || k < inum) {
-
-                                g4_ilist_tensor_mapped(nijk) = index_map[j0];
-                                g4_jlist_tensor_mapped(nijk) = index_map[i0];
-                                g4_klist_tensor_mapped(nijk) = index_map[k0];
-
-                                g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<float> (jnx);
-                                g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<float> (jny);
-                                g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<float> (jnz);
-
-                                g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx);
-                                g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny);
-                                g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz);
-
-                                g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx - jnx);
-                                g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny - jny);
-                                g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
-
-                                offset = IJK(itype, jtype, ktype, n_lmp_types);
-                                g4_v2gmap_tensor_mapped(nijk, 0) = index_map[j0];
-                                g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
-
-                                nijk += 1;
-
-                            }
                         }
                     }
                 }
             }
         }
-
-        std::cout << "nijk_max: " << nijk_max << std::endl;
-        std::cout << "nijk: " << nijk << std::endl;
-
-        cnpy::npy_save<int32>(
-                "g4.ilist.npy",
-                g4_ilist_tensor->flat<int32>().data(),
-                {static_cast<size_t>(nijk_max)},
-                "w");
-        std::cout << "g4.ilist.npy" << std::endl;
-        cnpy::npy_save<int32>(
-                "g4.jlist.npy",
-                g4_jlist_tensor->flat<int32>().data(),
-                {static_cast<size_t>(nijk_max)},
-                "w");
-        std::cout << "g4.jlist.npy" << std::endl;
-        cnpy::npy_save<int32>(
-                "g4.klist.npy",
-                g4_klist_tensor->flat<int32>().data(),
-                {static_cast<size_t>(nijk_max)},
-                "w");
-        std::cout << "g4.klist.npy" << std::endl;
-        cnpy::npy_save<float>(
-                "g4.ijSlist.npy",
-                g4_ij_shift_tensor->flat<float>().data(),
-                {static_cast<size_t>(nijk_max), 3},
-                "w");
-        std::cout << "g4.ijSlist.npy" << std::endl;
-        cnpy::npy_save<float>(
-                "g4.ikSlist.npy",
-                g4_ik_shift_tensor->flat<float>().data(),
-                {static_cast<size_t>(nijk_max), 3},
-                "w");
-        std::cout << "g4.ikSlist.npy" << std::endl;
-        cnpy::npy_save<float>(
-                "g4.jkSlist.npy",
-                g4_jk_shift_tensor->flat<float>().data(),
-                {static_cast<size_t>(nijk_max), 3},
-                "w");
-        std::cout << "g4.jkSlist.npy" << std::endl;
-        cnpy::npy_save<int32>(
-                "g4.v2g_map.npy",
-                g4_v2gmap_tensor->flat<int32>().data(),
-                {static_cast<size_t>(nijk_max), 2},
-                "w");
-        std::cout << "g4.v2g_map.npy" << std::endl;
-
         std::vector<std::pair<string, Tensor>> addon({
             {"Placeholders/g4.v2g_map", *g4_v2gmap_tensor},
             {"Placeholders/g4.ij.ilist", *g4_ilist_tensor},
@@ -645,13 +538,9 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         "Output/Forces/forces:0",
         "Output/Stress/Voigt/stress:0"});
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
-
-    if (verbose) {
-        std::cout << status.ToString() << std::endl;
-    }
-    else if (!status.ok()) {
-        std::cout << status.ToString() << std::endl;
-        error->all(FLERR, "TensorAlloy internal error");
+    if (!status.ok()) {
+        auto message = "TensorAlloy internal error: " + status.ToString();
+        error->all(FLERR, message.c_str());
     }
 
     if (eflag_global) {
@@ -660,7 +549,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     auto nn_gsl_forces = outputs[1].matrix<float>();
     const int32 *reverse_map = vap->get_reverse_map();
-
     for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
         ilocal = reverse_map[igsl];
         if (ilocal >= 0) {
@@ -857,7 +745,6 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         std::cout << "Successfully parsed tensor <Transformer/params:0>" << std::endl;
 
         cutmax = jsonData["rc"].asDouble();
-        // cutmax = 3.0;
         use_angular = jsonData["angular"].asBool();
         n_eta = jsonData["eta"].size();
         n_omega = jsonData["omega"].size();

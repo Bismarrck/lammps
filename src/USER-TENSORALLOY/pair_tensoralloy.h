@@ -42,7 +42,6 @@ namespace LAMMPS_NS {
         int n_beta;
         int n_gamma;
         int n_zeta;
-        bool verbose;
         int *g4_numneigh;
 
         tensorflow::int32 *g2_offset_map;
