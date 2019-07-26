@@ -14,16 +14,24 @@ PairStyle(tensoralloy, PairTensorAlloy)
 #include <atom.h>
 #include "pair.h"
 #include "virtual_atom_approach.h"
+#include "graph_model.h"
 
 #include "tensorflow/core/public/session.h"
 
 
 namespace LAMMPS_NS {
 
+    using tensorflow::Tensor;
+    using tensorflow::string;
+    using tensorflow::int32;
+    using tensorflow::Status;
+    using std::vector;
+
     class PairTensorAlloy : public Pair {
     public:
         explicit PairTensorAlloy(class LAMMPS *);
         ~PairTensorAlloy() override;
+
         void compute(int, int) override;
         void settings(int, char **) override;
         void coeff(int, char **) override;
@@ -33,49 +41,44 @@ namespace LAMMPS_NS {
         double memory_usage() override;
 
     protected:
-
-        // Virtual-Atom Approach
-        int *max_occurs;
-        bool use_angular;
-        int n_eta;
-        int n_omega;
-        int n_beta;
-        int n_gamma;
-        int n_zeta;
+        // Virtual-atom approach variables
+        GraphModel graph_model;
         int *g4_numneigh;
-
-        tensorflow::int32 *g2_offset_map;
-        tensorflow::int32 *g4_offset_map;
-        VirtualAtomMap *vap;
-
         double cutforcesq, cutmax;
 
+        int32 *g2_offset_map;
+        int32 *g4_offset_map;
+        VirtualAtomMap *vap;
+
+        void init_offset_maps();
+        void read_graph_model(const string& filename, const vector<string>& symbols);
+
         template <typename T> double update_cell ();
-        tensorflow::Status load_graph(const tensorflow::string& filename);
-
-        void get_shift_vector(const int i, double &nx, double &ny, double &nz);
-        double get_interatomic_distance(const int i, const int j, bool square=true);
-
+        void get_shift_vector(int i, double &nx, double &ny, double &nz);
+        double get_interatomic_distance(int i, const int j, bool square=true);
         int inline get_local_idx(const int i) {
             return atom->tag[i] - 1;
         }
 
+        // Original Pair variables
         int nmax;
         void allocate();
 
     private:
-
+        // TensorFlow variables and functions
+        Status load_graph(const string& filename);
         std::unique_ptr<tensorflow::Session> session;
-        tensorflow::Tensor *h_tensor;
+
+        Tensor *h_tensor;
         double h_inv[3][3];
 
-        tensorflow::Tensor *R_tensor;
-        tensorflow::Tensor *volume_tensor;
-        tensorflow::Tensor *n_atoms_vap_tensor;
-        tensorflow::Tensor *pulay_stress_tensor;
-        tensorflow::Tensor *composition_tensor;
-        tensorflow::Tensor *atom_mask_tensor;
-        tensorflow::Tensor *row_splits_tensor;
+        Tensor *R_tensor;
+        Tensor *volume_tensor;
+        Tensor *n_atoms_vap_tensor;
+        Tensor *pulay_stress_tensor;
+        Tensor *composition_tensor;
+        Tensor *atom_mask_tensor;
+        Tensor *row_splits_tensor;
 
         double dynamic_bytes;
         double tensors_memory_usage();

@@ -81,17 +81,10 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     cutmax = 0.0;
     cutforcesq = 0.0;
-    use_angular = false;
-    n_eta = 0;
-    n_omega = 0;
-    n_beta = 0;
-    n_gamma = 0;
-    n_zeta = 0;
 
     g2_offset_map = nullptr;
     g4_offset_map = nullptr;
     g4_numneigh = nullptr;
-    max_occurs = nullptr;
     vap = nullptr;
     session = nullptr;
 
@@ -128,18 +121,10 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
 PairTensorAlloy::~PairTensorAlloy()
 {
-    if (vap) {
-        delete vap;
-        vap = nullptr;
-    }
-
-    memory->destroy(max_occurs);
-    delete [] max_occurs;
-
     memory->destroy(g2_offset_map);
     delete [] g2_offset_map;
 
-    if (use_angular) {
+    if (graph_model.angular()) {
         memory->destroy(g4_offset_map);
         delete [] g4_offset_map;
 
@@ -175,6 +160,9 @@ PairTensorAlloy::~PairTensorAlloy()
         delete row_splits_tensor;
         row_splits_tensor = nullptr;
     }
+
+    delete vap;
+    vap = nullptr;
 }
 
 /* ----------------------------------------------------------------------
@@ -398,7 +386,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                 nij += 1;
 
-                if (use_angular) {
+                if (graph_model.angular()) {
                     g4_numneigh[i] += 1;
                 }
             }
@@ -428,7 +416,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     Tensor *g4_ik_shift_tensor = nullptr;
     Tensor *g4_jk_shift_tensor = nullptr;
 
-    if (use_angular) {
+    if (graph_model.angular()) {
         for (i = 0; i < atom->nlocal; i++) {
             jnum = g4_numneigh[i];
             nijk_max += (jnum - 1) * jnum / 2;
@@ -485,7 +473,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                         } else {
                             k = kk - jnum;
                         }
-
                         if (shortneigh[i][kk]) {
                             ktype = atom->type[k];
                             k0 = get_local_idx(k);
@@ -579,7 +566,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         delete [] shortneigh[i];
     delete [] shortneigh;
 
-    if (use_angular) {
+    if (graph_model.angular()) {
 
         dynamic_bytes += g4_v2gmap_tensor->TotalBytes();
         dynamic_bytes += g4_ilist_tensor->TotalBytes();
@@ -702,177 +689,127 @@ Status PairTensorAlloy::load_graph(const string &graph_file_name) {
 }
 
 /* ----------------------------------------------------------------------
-   Read the coefficients
+   Initialize the G2 and G4 offset maps
 ------------------------------------------------------------------------- */
 
-void PairTensorAlloy::coeff(int narg, char **arg)
+void PairTensorAlloy::init_offset_maps()
 {
-    int i, j, k, n_elements;
-    int *element_map;
-    std::vector<string> symbols;
-    symbols.emplace_back("X");
-
-    // Read Lammps element order
-    std::cout << "Lammps atom types: ";
-    for (i = 1; i < narg; i++) {
-        string element = string(arg[i]);
-        std::cout << element << " ";
-        symbols.emplace_back(element);
-    }
-    std::cout << std::endl;
-    memory->create(element_map, symbols.size(), "pair:element_map");
-    for (i = 0; i < symbols.size() + 1; i++) {
-        element_map[i] = 0;
+    int n = graph_model.get_n_elements();
+    int N = n + 1;
+    int i, j, k;
+    int pos, offset;
+    int g2_size = graph_model.get_ndim(false);
+    int g4_size = graph_model.get_ndim(true);
+    int g2_ndim_per_atom = n * g2_size;
+    int g4_ndim_per_atom = 0;
+    if (graph_model.angular()) {
+        g4_ndim_per_atom = (n + 1) * n / 2 * g4_size;
     }
 
-    // Load the graph model
-    string graph_model_path(arg[0]);
-    Status load_graph_status = load_graph(graph_model_path);
-    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+    offset = 0;
 
-    // Decode the transformer
-    std::vector<Tensor> outputs;
-    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
-    std::cout << "Recover model metadata: " << status << std::endl;
-
-    Json::Value jsonData;
-    Json::Reader jsonReader;
-    auto decoded = outputs[0].flat<string>();
-    auto parse_status = jsonReader.parse(decoded.data()[0], jsonData, false);
-
-    if (parse_status)
-    {
-        std::cout << "Successfully parsed tensor <Transformer/params:0>" << std::endl;
-
-        cutmax = jsonData["rc"].asDouble();
-        use_angular = jsonData["angular"].asBool();
-        n_eta = jsonData["eta"].size();
-        n_omega = jsonData["omega"].size();
-        n_beta = jsonData["beta"].size();
-        n_gamma = jsonData["gamma"].size();
-        n_zeta = jsonData["zeta"].size();
-
-        Json::Value model_elements = jsonData["elements"];
-        n_elements = model_elements.size();
-
-        std::cout << "Graph model elements: ";
-        for (i = 0; i < n_elements; i++) {
-            std::cout << model_elements[i].asString() << " ";
-        }
-        std::cout << std::endl;
-
-        for (i = 1; i < symbols.size(); i++) {
-            if (symbols[i] != model_elements[i - 1].asString()) {
-                error->all(FLERR, "Elements misorder.");
-            }
-        }
-
-        std::cout << "rc: " << std::setprecision(3) << cutmax << std::endl;
-        std::cout << "angular: " << use_angular << std::endl;
-        std::cout << "n_eta: " << n_eta << std::endl;
-        std::cout << "n_omega: " << n_omega << std::endl;
-        std::cout << "n_beta: " << n_beta << std::endl;
-        std::cout << "n_gamma: " << n_gamma << std::endl;
-        std::cout << "n_zeta: " << n_zeta << std::endl;
-        std::cout << "map: ";
-        for (i = 1; i < symbols.size(); i++) {
-            std::cout << i << "->" << element_map[i] << " ";
-        }
-        std::cout << std::endl;
-    }
-    else
-    {
-        n_elements = 0;
-        error->all(FLERR, "Could not decode tensor <Transformer/params:0>");
-    }
-
-    int32 n_lmp_types = n_elements + 1;
-
-    if (narg != 1 + n_elements)
-        error->all(FLERR,"Incorrect args for pair coefficients");
-
-    memory->create(max_occurs, n_lmp_types, "pair:max_occurs");
-    for (i = 0; i < n_lmp_types; i++)
-        max_occurs[i] = 0;
-    for (i = 0; i < atom->natoms; i++)
-        max_occurs[atom->type[i]] ++;
-    for (i = 1; i < n_lmp_types; i++)
-        if (max_occurs[i] == 0)
-            max_occurs[i] = 1;
-    for (i = 0; i < n_lmp_types; i++)
-        std::cout << "MaxOccur of " << symbols[i] << ": " << max_occurs[i] << std::endl;
-
-    // Initialize the Virtual-Atom Map
-    vap = new VirtualAtomMap(memory, symbols.size(), max_occurs, atom->natoms, atom->type);
-    vap->print();
-
-    int32 g2_size = n_eta * n_omega;
-    int32 g4_size = n_beta * n_gamma * n_zeta;
-    int32 g2_ndim_per_atom = n_elements * g2_size;
-    int32 g4_ndim_per_atom = 0;
-
-    if (use_angular) {
-        g4_ndim_per_atom = (n_elements + 1) * n_elements / 2 * g4_size;
-    }
-
-    int32 offset = 0;
-    int32 pos = 0;
-
-    memory->create(g2_offset_map, n_lmp_types * n_lmp_types, "pair:g2_offset_map");
-    for (i = 1; i < n_lmp_types; i++) {
-        pos = IJ(i, i, n_lmp_types);
-        g2_offset_map[i * n_lmp_types + i] = offset;
-        std::cout << symbols[i] << symbols[i] << ": " << g2_offset_map[pos] << std::endl;
+    memory->create(g2_offset_map, N * N, "pair:g2_offset_map");
+    for (i = 1; i < N; i++) {
+        pos = IJ(i, i, N);
+        g2_offset_map[pos] = offset;
         offset += g2_size;
-        for (j = 1; j < n_lmp_types; j++) {
+        for (j = 1; j < N; j++) {
             if (j == i) {
                 continue;
             }
-            pos = IJ(i, j, n_lmp_types);
+            pos = IJ(i, j, N);
             g2_offset_map[pos] = offset;
-            std::cout << symbols[i] << symbols[j] << ": " << g2_offset_map[pos] << std::endl;
             offset += g2_size;
         }
         offset += g4_ndim_per_atom;
     }
 
-    if (use_angular) {
-        size_t alloc_size = n_lmp_types * n_lmp_types * n_lmp_types;
-        memory->create(g4_offset_map, alloc_size, "pair:g4_offset_map");
-        offset = g2_ndim_per_atom;
-        for (i = 1; i < n_lmp_types; i++) {
-            for (j = 1; j < n_lmp_types; j++) {
-                for (k = j; k < n_lmp_types; k++) {
-                    pos = IJK(i, j, k, n_lmp_types);
-                    g4_offset_map[pos] = offset;
-                    std::cout << symbols[i] << symbols[j] << symbols[k] << ": " << g4_offset_map[pos] << std::endl;
-                    offset += g4_size;
-                }
+    size_t alloc_size = N * N * N;
+    memory->create(g4_offset_map, alloc_size, "pair:g4_offset_map");
+    offset = g2_ndim_per_atom;
+    for (i = 1; i < N; i++) {
+        for (j = 1; j < N; j++) {
+            for (k = j; k < N; k++) {
+                pos = IJK(i, j, k, N);
+                g4_offset_map[pos] = offset;
+                offset += g4_size;
             }
-            offset += g2_ndim_per_atom;
         }
-
-        memory->create(g4_numneigh, atom->nlocal, "pair:g4_numneigh");
-        for (i = 0; i < atom->nlocal; i++)
-            g4_numneigh[i] = 0;
+        offset += g2_ndim_per_atom;
     }
+
+    memory->create(g4_numneigh, atom->nlocal, "pair:g4_numneigh");
+    for (i = 0; i < atom->nlocal; i++)
+        g4_numneigh[i] = 0;
+}
+
+/* ----------------------------------------------------------------------
+   Read the graph model.
+------------------------------------------------------------------------- */
+
+void PairTensorAlloy::read_graph_model(
+        const string& graph_model_path,
+        const std::vector<string>& symbols)
+{
+    Status load_graph_status = load_graph(graph_model_path);
+    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+
+    std::vector<Tensor> outputs;
+    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "Decode graph model error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+
+    status = graph_model.read(outputs[0], graph_model_path, symbols);
+    if (!status.ok()) {
+        error->all(FLERR, status.error_message().c_str());
+    }
+}
+
+/* ----------------------------------------------------------------------
+   The implementation of `pair_coef
+------------------------------------------------------------------------- */
+
+void PairTensorAlloy::coeff(int narg, char **arg)
+{
+    // Read atom types from the lammps input file.
+    std::vector<string> symbols;
+    symbols.emplace_back("X");
+    for (int i = 1; i < narg; i++) {
+        symbols.emplace_back(string(arg[i]));
+    }
+
+    // Load the graph model
+    read_graph_model(string(arg[0]), symbols);
+    graph_model.compute_max_occurs(atom->natoms, atom->type);
+
+    // Initialize the Virtual-Atom Map
+    vap = new VirtualAtomMap(memory);
+    vap->build(graph_model, atom->natoms, atom->type);
+
+    // Initialize the offset maps.
+    init_offset_maps();
 
     // Allocate arrays and tensors.
     allocate();
 
     // Set atomic masses
-    double atom_mass[n_lmp_types];
-    for (i = 0; i < n_lmp_types; i++) {
+    double atom_mass[symbols.size()];
+    for (int i = 0; i < symbols.size(); i++) {
         atom_mass[i] = 1.0;
     }
     atom->set_mass(atom_mass);
 
-    // setflag
-    for (i = 1; i < n_lmp_types; i++) {
-        for (j = i; j < n_lmp_types; j++) {
+    // Set `setflag` which is required by Lammps.
+    for (int i = 1; i < symbols.size(); i++) {
+        for (int j = i; j < symbols.size(); j++) {
             setflag[i][j] = 1;
         }
     }
+
+    // Set `cutmax`.
+    cutmax = graph_model.get_cutoff();
 }
 
 

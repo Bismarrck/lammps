@@ -8,6 +8,7 @@
 #include <tensorflow/core/platform/default/integral_types.h>
 #include "pair.h"
 #include "memory.h"
+#include "graph_model.h"
 
 namespace LAMMPS_NS {
 
@@ -15,27 +16,22 @@ namespace LAMMPS_NS {
 
     class VirtualAtomMap {
     public:
-        VirtualAtomMap();
-        VirtualAtomMap(Memory *, int, const int *, int, const int *);
+        explicit VirtualAtomMap(Memory *);
         ~VirtualAtomMap();
 
-        const int32 *get_row_splits() { return splits; }
-        const int32 *get_index_map() { return index_map; }
-        const int32 *get_reverse_map() { return reverse_map; }
-        float *get_atom_mask() { return mask; }
-        int get_n_atoms_vap() { return n_atoms_vap; }
+        void build(const GraphModel&, int, const int *);
 
-        void print();
-        double memory_usage();
+        const int32 *get_row_splits() const { return splits; }
+        const int32 *get_index_map() const { return index_map; }
+        const int32 *get_reverse_map() const { return reverse_map; }
+        const float *get_atom_mask() const { return mask; }
+        const int get_n_atoms_vap() const { return n_atoms_vap; }
 
-    private:
-        // Variables from outside
-        int _n_symbols;
-        int _inum;
+        const double memory_usage() const { return total_bytes; };
 
     protected:
         // Internal variables
-        int n_atoms_vap;
+        int32 n_atoms_vap;
         int32 *element_map;
         int32 *offsets;
         int32 *index_map;
@@ -44,6 +40,10 @@ namespace LAMMPS_NS {
         float *mask;
 
         Memory *_memory;
+
+    private:
+        double total_bytes;
+
     };
 }
 
