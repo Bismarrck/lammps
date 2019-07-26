@@ -424,6 +424,7 @@ if(PKG_USER-TENSORALLOY)
   set(USER-TENSORALLOY_SOURCES_DIR ${LAMMPS_SOURCE_DIR}/USER-TENSORALLOY)
   set(USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/pair_tensoralloy.cpp
                                ${USER-TENSORALLOY_SOURCES_DIR}/virtual_atom_approach.cpp
+                               ${USER-TENSORALLOY_SOURCES_DIR}/graph_model.cpp
                                ${USER-TENSORALLOY_SOURCES_DIR}/jsoncpp/jsoncpp.cpp)
 
   include_directories(${USER-TENSORALLOY_SOURCES_DIR})
