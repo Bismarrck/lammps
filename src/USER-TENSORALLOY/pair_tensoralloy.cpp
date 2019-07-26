@@ -358,6 +358,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         jlist = firstneigh[i];
         jnum = numneigh[i];
         shortneigh[i] = new bool [jnum + ii];
+        g4_numneigh[i] = 0;
 
         for (jj = 0; jj < jnum + ii; jj++) {
             if (jj < jnum) {
@@ -417,7 +418,8 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     Tensor *g4_jk_shift_tensor = nullptr;
 
     if (graph_model.angular()) {
-        for (i = 0; i < atom->nlocal; i++) {
+        for (ii = 0; ii < inum; ii++) {
+            i = ilist[ii];
             jnum = g4_numneigh[i];
             nijk_max += (jnum - 1) * jnum / 2;
         }
