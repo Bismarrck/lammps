@@ -97,6 +97,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
 
+    // Use parallel mode by default.
+    serial_mode = false;
+
     // set comm size needed by this Pair
     comm_forward = 0;
     comm_reverse = 0;
@@ -677,10 +680,12 @@ Status PairTensorAlloy::load_graph(const string &graph_file_name) {
     // Initialize the session
     tensorflow::SessionOptions options;
     options.config.set_allow_soft_placement(true);
-    options.config.set_use_per_session_threads(true);
     options.config.set_log_device_placement(false);
-    options.config.set_inter_op_parallelism_threads(0);
-    options.config.set_intra_op_parallelism_threads(1);
+
+    if (serial_mode) {
+        options.config.set_inter_op_parallelism_threads(1);
+        options.config.set_intra_op_parallelism_threads(1);
+    }
 
     session.reset(tensorflow::NewSession(options));
     Status session_create_status = session->Create(graph_def);
@@ -779,7 +784,18 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     std::vector<string> symbols;
     symbols.emplace_back("X");
     for (int i = 1; i < narg; i++) {
-        symbols.emplace_back(string(arg[i]));
+        auto option = string(arg[i]);
+        if (option.c_str()[0] == '-') {
+            if (option == "--serial") {
+                serial_mode = true;
+                std::cout << "Warning: serial mode is used." << std::endl;
+            } else {
+                auto message = "Unrecognized option: " + option;
+                error->all(FLERR, message.c_str());
+            }
+        } else {
+            symbols.emplace_back(string(arg[i]));
+        }
     }
 
     // Load the graph model

@@ -68,6 +68,7 @@ namespace LAMMPS_NS {
         // TensorFlow variables and functions
         Status load_graph(const string& filename);
         std::unique_ptr<tensorflow::Session> session;
+        bool serial_mode;
 
         Tensor *h_tensor;
         double h_inv[3][3];
