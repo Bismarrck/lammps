@@ -369,29 +369,24 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
+        i0 = get_local_idx(i);
         itype = atom->type[i];
         jlist = firstneigh[i];
         jnum = numneigh[i];
         shortneigh[i] = new bool [jnum + ii];
 
-        for (jj = 0; jj < jnum; jj++) {
-            j = jlist[jj];
-            j &= (unsigned)NEIGHMASK;
-            shortneigh[ii][jj] = false;
-            rsq = get_interatomic_distance(i, j, true);
-
-//        for (jj = 0; jj < jnum + ii; jj++) {
-//            if (jj < jnum) {
-//                j = jlist[jj];
-//                j &= (unsigned)NEIGHMASK;
-//            } else {
-//                j = jj - jnum;
-//            }
-//            shortneigh[ii][jj] = false;
-//            rsq = get_interatomic_distance(i, j);
+        for (jj = 0; jj < jnum + ii; jj++) {
+            if (jj < jnum) {
+                j = jlist[jj];
+                j &= (unsigned)NEIGHMASK;
+            } else {
+                j = jj - jnum;
+            }
+            shortneigh[i][jj] = false;
+            rsq = get_interatomic_distance(i, j);
 
             if (rsq < cutforcesq) {
-                shortneigh[ii][jj] = true;
+                shortneigh[i][jj] = true;
                 jtype = atom->type[j];
                 j0 = get_local_idx(j);
                 get_shift_vector(j, jnx, jny, jnz);
@@ -399,38 +394,22 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 g2_shift_tensor_mapped(nij, 0) = static_cast<float> (jnx);
                 g2_shift_tensor_mapped(nij, 1) = static_cast<float> (jny);
                 g2_shift_tensor_mapped(nij, 2) = static_cast<float> (jnz);
-                g2_ilist_tensor_mapped(nij) = index_map[i];
+                g2_ilist_tensor_mapped(nij) = index_map[i0];
                 g2_jlist_tensor_mapped(nij) = index_map[j0];
 
                 offset = IJ(itype, jtype, n_lmp_types);
-                g2_v2gmap_tensor_mapped(nij, 0) = index_map[i];
+                g2_v2gmap_tensor_mapped(nij, 0) = index_map[i0];
                 g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                 nij += 1;
 
                 if (use_angular) {
                     g4_numneigh[i] += 1;
                 }
-
-                if (i < inum && j < inum) {
-                    // `j > i` is always true in Lammps neighbour list.
-                    g2_shift_tensor_mapped(nij, 0) = 0.0f;
-                    g2_shift_tensor_mapped(nij, 1) = 0.0f;
-                    g2_shift_tensor_mapped(nij, 2) = 0.0f;
-                    g2_ilist_tensor_mapped(nij) = index_map[j];
-                    g2_jlist_tensor_mapped(nij) = index_map[i];
-
-                    offset = IJ(jtype, itype, n_lmp_types);
-                    g2_v2gmap_tensor_mapped(nij, 0) = index_map[j];
-                    g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
-                    nij += 1;
-
-                    if (use_angular) {
-                        g4_numneigh[j] += 1;
-                    }
-                }
             }
         }
     }
+
+    std::cout << "nij: " << nij << std::endl;
 
     std::vector<std::pair<string, Tensor>> feed_dict({
         {"Placeholders/positions", *R_tensor},
