@@ -129,6 +129,7 @@ FixNVESpin::FixNVESpin(LAMMPS *lmp, int narg, char **arg) :
   // initialize the magnetic interaction flags
 
   pair_spin_flag = 0;
+  long_spin_flag = 0;
   precession_spin_flag = 0;
   maglangevin_flag = 0;
   tdamp_flag = temp_flag = 0;
@@ -213,7 +214,15 @@ void FixNVESpin::init()
   if (count != npairspin)
     error->all(FLERR,"Incorrect number of spin pairs");
 
+  // set pair/spin and long/spin flags
+
   if (npairspin >= 1) pair_spin_flag = 1;
+
+  for (int i = 0; i<npairs; i++) {
+    if (force->pair_match("spin/long",0,i)) {
+      long_spin_flag = 1;
+    }
+  }
 
   // ptrs FixPrecessionSpin classes
 
@@ -303,29 +312,37 @@ void FixNVESpin::initial_integrate(int /*vflag*/)
       comm->forward_comm();
       int i = stack_foot[j];
       while (i >= 0) {
-        ComputeInteractionsSpin(i);
-        AdvanceSingleSpin(i);
-        i = forward_stacks[i];
+        if (mask[i] & groupbit) {
+          ComputeInteractionsSpin(i);
+          AdvanceSingleSpin(i);
+          i = forward_stacks[i];
+	}
       }
     }
     for (int j = nsectors-1; j >= 0; j--) {     // advance quarter s for nlocal
       comm->forward_comm();
       int i = stack_head[j];
       while (i >= 0) {
-        ComputeInteractionsSpin(i);
-        AdvanceSingleSpin(i);
-        i = backward_stacks[i];
+        if (mask[i] & groupbit) {
+          ComputeInteractionsSpin(i);
+          AdvanceSingleSpin(i);
+          i = backward_stacks[i];
+	}
       }
     }
   } else if (sector_flag == 0) {                // serial seq. update
     comm->forward_comm();                       // comm. positions of ghost atoms
     for (int i = 0; i < nlocal; i++){           // advance quarter s for nlocal
-      ComputeInteractionsSpin(i);
-      AdvanceSingleSpin(i);
+      if (mask[i] & groupbit) {
+        ComputeInteractionsSpin(i);
+        AdvanceSingleSpin(i);
+      }
     }
     for (int i = nlocal-1; i >= 0; i--){        // advance quarter s for nlocal
-      ComputeInteractionsSpin(i);
-      AdvanceSingleSpin(i);
+      if (mask[i] & groupbit) {
+        ComputeInteractionsSpin(i);
+        AdvanceSingleSpin(i);
+      }
     }
   } else error->all(FLERR,"Illegal fix NVE/spin command");
 
@@ -348,29 +365,37 @@ void FixNVESpin::initial_integrate(int /*vflag*/)
       comm->forward_comm();
       int i = stack_foot[j];
       while (i >= 0) {
-        ComputeInteractionsSpin(i);
-        AdvanceSingleSpin(i);
-        i = forward_stacks[i];
+        if (mask[i] & groupbit) {
+          ComputeInteractionsSpin(i);
+          AdvanceSingleSpin(i);
+          i = forward_stacks[i];
+	}
       }
     }
     for (int j = nsectors-1; j >= 0; j--) {     // advance quarter s for nlocal
       comm->forward_comm();
       int i = stack_head[j];
       while (i >= 0) {
-        ComputeInteractionsSpin(i);
-        AdvanceSingleSpin(i);
-        i = backward_stacks[i];
+        if (mask[i] & groupbit) {
+          ComputeInteractionsSpin(i);
+          AdvanceSingleSpin(i);
+          i = backward_stacks[i];
+	}
       }
     }
   } else if (sector_flag == 0) {                // serial seq. update
     comm->forward_comm();                       // comm. positions of ghost atoms
     for (int i = 0; i < nlocal; i++){           // advance quarter s for nlocal-1
-      ComputeInteractionsSpin(i);
-      AdvanceSingleSpin(i);
+      if (mask[i] & groupbit) {
+        ComputeInteractionsSpin(i);
+        AdvanceSingleSpin(i);
+      }
     }
     for (int i = nlocal-1; i >= 0; i--){        // advance quarter s for nlocal-1
-      ComputeInteractionsSpin(i);
-      AdvanceSingleSpin(i);
+      if (mask[i] & groupbit) {
+        ComputeInteractionsSpin(i);
+        AdvanceSingleSpin(i);
+      }
     }
   } else error->all(FLERR,"Illegal fix NVE/spin command");
 
@@ -604,11 +629,11 @@ void FixNVESpin::AdvanceSingleSpin(int i)
 
   // renormalization (check if necessary)
 
-  //msq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
-  //scale = 1.0/sqrt(msq);
-  //sp[i][0] *= scale;
-  //sp[i][1] *= scale;
-  //sp[i][2] *= scale;
+  // msq = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
+  // scale = 1.0/sqrt(msq);
+  // sp[i][0] *= scale;
+  // sp[i][1] *= scale;
+  // sp[i][2] *= scale;
 
   // comm. sp[i] to atoms with same tag (for serial algo)
 
