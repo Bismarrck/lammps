@@ -17,47 +17,27 @@
 #include <cmath>
 #include <vector>
 #include <map>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <iomanip>
 #include <domain.h>
-#include "atom.h"
 #include "force.h"
 #include "comm.h"
 #include "neighbor.h"
 #include "neigh_list.h"
-#include "memory.h"
 #include "error.h"
-#include "utils.h"
 
-#include "tensorflow/cc/client/client_session.h"
 #include "tensorflow/cc/framework/ops.h"
-#include "tensorflow/cc/ops/const_op.h"
-#include "tensorflow/cc/ops/image_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/graph/default_device.h"
-#include "tensorflow/core/graph/graph_def_builder.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/core/threadpool.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
-#include "tensorflow/core/platform/init_main.h"
-#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session.h"
-#include "tensorflow/core/util/command_line_flags.h"
 
-#include "jsoncpp/json/json.h"
 #include "pair_tensoralloy.h"
 
 using namespace LAMMPS_NS;
 
-using tensorflow::Flag;
 using tensorflow::int32;
 using tensorflow::DT_INT32;
 using tensorflow::DT_FLOAT;
@@ -261,7 +241,7 @@ void PairTensorAlloy::get_shift_vector(const int i, double &nx, double &ny, doub
    Calculate the interatomic distance of (i, j).
 ------------------------------------------------------------------------- */
 
-double PairTensorAlloy::get_interatomic_distance(const int i, const int j, bool square)
+const double PairTensorAlloy::get_interatomic_distance(int i, int j, bool square)
 {
     double rsq;
     double rijx, rijy, rijz;
@@ -295,9 +275,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     int *ilist, *jlist, *numneigh, **firstneigh;
     const int32 *index_map;
     bool **shortneigh;
-
-    // The atom type starts from 1 in LAMMPS. So `n_lmp_types` should be `ntypes + 1`.
-    int n_lmp_types = atom->ntypes + 1;
+    int model_N = graph_model.get_n_elements() + 1;
 
     ev_init(eflag, vflag);
 
@@ -385,7 +363,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 g2_ilist_tensor_mapped(nij) = index_map[i0];
                 g2_jlist_tensor_mapped(nij) = index_map[j0];
 
-                offset = IJ(itype, jtype, n_lmp_types);
+                offset = IJ(itype, jtype, model_N);
                 g2_v2gmap_tensor_mapped(nij, 0) = index_map[i0];
                 g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                 nij += 1;
@@ -499,7 +477,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                             g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny - jny);
                             g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
 
-                            offset = IJK(itype, jtype, ktype, n_lmp_types);
+                            offset = IJK(itype, jtype, ktype, model_N);
                             g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
                             g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
 
@@ -603,14 +581,21 @@ void PairTensorAlloy::allocate()
 
     allocated = 1;
 
-    int n = atom->ntypes;
+    // ntypes: the number of atom types
+    // N: the number of atom types plus one because `atom->type[i] >= 1`.
+    // model: the atom types read from the graph model.
+    // lmp: the atom types read from LAMMPS input (data) file.
+    int model_ntypes = graph_model.get_n_elements();
+    int model_N = model_ntypes + 1;
+    int lmp_ntypes = atom->ntypes;
+    int lmp_N = lmp_ntypes + 1;
     int i, j;
 
-    memory->create(setflag, n + 1, n + 1, "pair:setflag");
-    for (i = 1; i <= n; i++)
-        for (j = i; j <= n; j++)
+    memory->create(setflag, lmp_N, lmp_N, "pair:setflag");
+    for (i = 1; i < lmp_N; i++)
+        for (j = i; j <= lmp_N; j++)
             setflag[i][j] = 0;
-    memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
+    memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
 
     // Lattice
     h_tensor = new Tensor(DT_FLOAT, TensorShape({3, 3}));
@@ -624,9 +609,9 @@ void PairTensorAlloy::allocate()
     volume_tensor = new Tensor(DT_FLOAT, TensorShape({}));
 
     // row splits tensor
-    row_splits_tensor = new Tensor(DT_INT32, TensorShape({n + 1}));
+    row_splits_tensor = new Tensor(DT_INT32, TensorShape({model_N}));
     row_splits_tensor->tensor<int32, 1>().setConstant(0);
-    for (i = 0; i < n + 1; i++) {
+    for (i = 0; i < model_N; i++) {
         row_splits_tensor->tensor<int32, 1>()(i) = vap->get_row_splits()[i];
     }
 
@@ -646,7 +631,7 @@ void PairTensorAlloy::allocate()
     pulay_stress_tensor->flat<float>()(0) = 0.0f;
 
     // Composition tensor
-    composition_tensor = new Tensor(DT_FLOAT, TensorShape({n}));
+    composition_tensor = new Tensor(DT_FLOAT, TensorShape({model_ntypes}));
     composition_tensor->flat<float>().setConstant(0.0);
     for (i = 0; i < atom->nlocal; i++) {
         composition_tensor->flat<float>()(atom->type[i] - 1) += 1.0f;
@@ -805,6 +790,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     // Initialize the Virtual-Atom Map
     vap = new VirtualAtomMap(memory);
     vap->build(graph_model, atom->natoms, atom->type);
+    std::cout << "VAP initialized." << std::endl;
 
     // Initialize the offset maps.
     init_offset_maps();
@@ -814,14 +800,14 @@ void PairTensorAlloy::coeff(int narg, char **arg)
 
     // Set atomic masses
     double atom_mass[symbols.size()];
-    for (int i = 0; i < symbols.size(); i++) {
+    for (int i = 1; i <= atom->ntypes; i++) {
         atom_mass[i] = 1.0;
     }
     atom->set_mass(atom_mass);
 
     // Set `setflag` which is required by Lammps.
-    for (int i = 1; i < symbols.size(); i++) {
-        for (int j = i; j < symbols.size(); j++) {
+    for (int i = 1; i <= atom->ntypes; i++) {
+        for (int j = i; j <= atom->ntypes; j++) {
             setflag[i][j] = 1;
         }
     }
