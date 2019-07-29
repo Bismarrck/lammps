@@ -20,6 +20,8 @@
 #include <iostream>
 #include <iomanip>
 #include <domain.h>
+#include <chrono>
+
 #include "force.h"
 #include "comm.h"
 #include "neighbor.h"
@@ -45,6 +47,12 @@ using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::Tensor;
 using tensorflow::TensorShape;
+
+#define USE_TIMER 1
+
+#if USE_TIMER
+typedef std::chrono::high_resolution_clock Clock;
+#endif
 
 #define MAXLINE 1024
 #define IJ(i,j,n) i * n + j
@@ -241,7 +249,7 @@ void PairTensorAlloy::get_shift_vector(const int i, double &nx, double &ny, doub
    Calculate the interatomic distance of (i, j).
 ------------------------------------------------------------------------- */
 
-const double PairTensorAlloy::get_interatomic_distance(int i, int j, bool square)
+const double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j, bool square)
 {
     double rsq;
     double rijx, rijy, rijz;
@@ -293,6 +301,10 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     firstneigh = list->firstneigh;
     index_map = vap->get_index_map();
     shortneigh = new bool* [inum];
+
+#if USE_TIMER
+    auto t_start = Clock::now();
+#endif
 
     // Cell
     volume = update_cell<float>();
@@ -389,6 +401,10 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
         {"Placeholders/pulay_stress", *pulay_stress_tensor}
     });
+
+#if USE_TIMER
+    auto t_g2 = Clock::now();
+#endif
 
     Tensor *g4_v2gmap_tensor = nullptr;
     Tensor *g4_ilist_tensor = nullptr;
@@ -502,6 +518,10 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         feed_dict.insert(std::end(feed_dict), std::begin(addon), std::end(addon));
     }
 
+#if USE_TIMER
+    auto t_g4 = Clock::now();
+#endif
+
     std::vector<Tensor> outputs;
     std::vector<string> run_ops({
         "Output/Energy/energy:0",
@@ -512,6 +532,9 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         auto message = "TensorAlloy internal error: " + status.ToString();
         error->all(FLERR, message.c_str());
     }
+#if USE_TIMER
+    auto t_run = Clock::now();
+#endif
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<float>().data()[0];
@@ -540,6 +563,10 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     dynamic_bytes += g2_jlist_tensor->TotalBytes();
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
 
+#if USE_TIMER
+    auto t_efv = Clock::now();
+#endif
+
     delete g2_shift_tensor;
     delete g2_ilist_tensor;
     delete g2_jlist_tensor;
@@ -567,6 +594,17 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         delete g4_ik_shift_tensor;
         delete g4_jk_shift_tensor;
     }
+
+#if USE_TIMER
+    auto t_stop = Clock::now();
+    auto ms_1 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g2 - t_start).count();
+    auto ms_2 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g4 - t_g2).count();
+    auto ms_3 = std::chrono::duration_cast<std::chrono::milliseconds>(t_run - t_g4).count();
+    auto ms_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_efv - t_run).count();
+    auto ms_5 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_efv).count();
+    auto ms_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_start).count();
+    printf("ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n", ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
+#endif
 }
 
 /* ----------------------------------------------------------------------
