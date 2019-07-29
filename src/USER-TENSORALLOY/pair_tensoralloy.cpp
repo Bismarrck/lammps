@@ -72,7 +72,6 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     g2_offset_map = nullptr;
     g4_offset_map = nullptr;
-    g4_numneigh = nullptr;
     vap = nullptr;
     session = nullptr;
 
@@ -118,9 +117,6 @@ PairTensorAlloy::~PairTensorAlloy()
     if (graph_model.angular()) {
         memory->destroy(g4_offset_map);
         delete [] g4_offset_map;
-
-        memory->destroy(g4_numneigh);
-        delete [] g4_numneigh;
     }
 
     if (allocated) {
@@ -276,6 +272,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     int nijk_max = 0;
     int offset;
     double rsq;
+    double rjk2, rik2;
     double volume;
     int i0, j0, k0;
     double jnx, jny, jnz;
@@ -351,7 +348,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         jlist = firstneigh[i];
         jnum = numneigh[i];
         shortneigh[i] = new bool [jnum + ii];
-        g4_numneigh[i] = 0;
 
         for (jj = 0; jj < jnum + ii; jj++) {
             if (jj < jnum) {
@@ -381,7 +377,19 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 nij += 1;
 
                 if (graph_model.angular()) {
-                    g4_numneigh[i] += 1;
+                    for (kk = jj + 1; kk < jnum + ii; kk++) {
+                        if (kk < jnum) {
+                            k = jlist[kk];
+                            k &= (unsigned)NEIGHMASK;
+                        } else {
+                            k = kk - jnum;
+                        }
+                        rik2 = get_interatomic_distance(i, k);
+                        rjk2 = get_interatomic_distance(j, k);
+                        if (rik2 < cutforcesq && rjk2 < cutforcesq) {
+                            nijk_max += 1;
+                        }
+                    }
                 }
             }
         }
@@ -415,12 +423,6 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     Tensor *g4_jk_shift_tensor = nullptr;
 
     if (graph_model.angular()) {
-        for (ii = 0; ii < inum; ii++) {
-            i = ilist[ii];
-            jnum = g4_numneigh[i];
-            nijk_max += (jnum - 1) * jnum / 2;
-        }
-
         g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
@@ -472,7 +474,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                         } else {
                             k = kk - jnum;
                         }
-                        if (shortneigh[i][kk]) {
+                        if (shortneigh[i][kk] && get_interatomic_distance(j, k) < cutforcesq) {
                             ktype = atom->type[k];
                             k0 = get_local_idx(k);
                             get_shift_vector(k, knx, kny, knz);
@@ -603,7 +605,8 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     auto ms_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_efv - t_run).count();
     auto ms_5 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_efv).count();
     auto ms_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_start).count();
-    printf("ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n", ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
+    printf("nijk_max %5d ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n",
+           nijk_max, ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
 #endif
 }
 
@@ -767,10 +770,6 @@ void PairTensorAlloy::init_offset_maps()
         }
         offset += g2_ndim_per_atom;
     }
-
-    memory->create(g4_numneigh, atom->nlocal, "pair:g4_numneigh");
-    for (i = 0; i < atom->nlocal; i++)
-        g4_numneigh[i] = 0;
 }
 
 /* ----------------------------------------------------------------------

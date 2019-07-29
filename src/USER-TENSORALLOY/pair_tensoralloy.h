@@ -43,7 +43,6 @@ namespace LAMMPS_NS {
     protected:
         // Virtual-atom approach variables
         GraphModel graph_model;
-        int *g4_numneigh;
         double cutforcesq, cutmax;
 
         int32 *g2_offset_map;
