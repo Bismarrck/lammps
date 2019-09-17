@@ -162,45 +162,16 @@ PairTensorAlloy::~PairTensorAlloy()
 template <typename T>
 double PairTensorAlloy::update_cell()
 {
-    double boxxlo, boxxhi, boxylo, boxyhi, boxzlo, boxzhi;
-    double boxxy, boxxz, boxyz;
-
-    if (domain->triclinic == 0) {
-        boxxlo = domain->boxlo[0];
-        boxxhi = domain->boxhi[0];
-        boxylo = domain->boxlo[1];
-        boxyhi = domain->boxhi[1];
-        boxzlo = domain->boxlo[2];
-        boxzhi = domain->boxhi[2];
-        boxxy = 0.0;
-        boxxz = 0.0;
-        boxyz = 0.0;
-    } else {
-        boxxlo = domain->boxlo_bound[0];
-        boxxhi = domain->boxhi_bound[0];
-        boxylo = domain->boxlo_bound[1];
-        boxyhi = domain->boxhi_bound[1];
-        boxzlo = domain->boxlo_bound[2];
-        boxzhi = domain->boxhi_bound[2];
-        boxxy = domain->xy;
-        boxxz = domain->xz;
-        boxyz = domain->yz;
-    }
-
-    // Copied from `ase.io.lammpsdata.read_lammps_data`
-    double xhilo = (boxxhi - boxxlo) - abs(boxxy) - abs(boxxz);
-    double yhilo = (boxyhi - boxylo) - abs(boxyz);
-    double zhilo = boxzhi - boxzlo;
     auto h_mapped = h_tensor->template tensor<T, 2>();
-    h_mapped(0, 0) = static_cast<T> (xhilo);
+    h_mapped(0, 0) = static_cast<T> (domain->h[0]);
     h_mapped(0, 1) = static_cast<T> (0.0);
     h_mapped(0, 2) = static_cast<T> (0.0);
-    h_mapped(1, 0) = static_cast<T> (boxxy);
-    h_mapped(1, 1) = static_cast<T> (yhilo);
+    h_mapped(1, 0) = static_cast<T> (domain->h[5]);
+    h_mapped(1, 1) = static_cast<T> (domain->h[1]);
     h_mapped(1, 2) = static_cast<T> (0.0);
-    h_mapped(2, 0) = static_cast<T> (boxxz);
-    h_mapped(2, 1) = static_cast<T> (boxyz);
-    h_mapped(2, 2) = static_cast<T> (zhilo);
+    h_mapped(2, 0) = static_cast<T> (domain->h[4]);
+    h_mapped(2, 1) = static_cast<T> (domain->h[3]);
+    h_mapped(2, 2) = static_cast<T> (domain->h[2]);
 
     // Compute the volume.
     double volume;
@@ -211,17 +182,15 @@ double PairTensorAlloy::update_cell()
         volume = domain->xprd * domain->yprd;
     }
 
-    // Compute the inverse matrix of `h`
-    double ivol = 1.0 / volume;
-    h_inv[0][0] = (h_mapped(1, 1) * h_mapped(2, 2) - h_mapped(2, 1) * h_mapped(1, 2)) * ivol;
-    h_inv[0][1] = (h_mapped(0, 2) * h_mapped(2, 1) - h_mapped(0, 1) * h_mapped(2, 2)) * ivol;
-    h_inv[0][2] = (h_mapped(0, 1) * h_mapped(1, 2) - h_mapped(0, 2) * h_mapped(1, 1)) * ivol;
-    h_inv[1][0] = (h_mapped(1, 2) * h_mapped(2, 0) - h_mapped(1, 0) * h_mapped(2, 2)) * ivol;
-    h_inv[1][1] = (h_mapped(0, 0) * h_mapped(2, 2) - h_mapped(0, 2) * h_mapped(2, 0)) * ivol;
-    h_inv[1][2] = (h_mapped(1, 0) * h_mapped(0, 2) - h_mapped(0, 0) * h_mapped(1, 2)) * ivol;
-    h_inv[2][0] = (h_mapped(1, 0) * h_mapped(2, 1) - h_mapped(2, 0) * h_mapped(1, 1)) * ivol;
-    h_inv[2][1] = (h_mapped(2, 0) * h_mapped(0, 1) - h_mapped(0, 0) * h_mapped(2, 1)) * ivol;
-    h_inv[2][2] = (h_mapped(0, 0) * h_mapped(1, 1) - h_mapped(1, 0) * h_mapped(0, 1)) * ivol;
+    h_inv[0][0] = domain->h_inv[0];
+    h_inv[1][1] = domain->h_inv[1];
+    h_inv[2][2] = domain->h_inv[2];
+    h_inv[2][1] = domain->h_inv[3];
+    h_inv[2][0] = domain->h_inv[4];
+    h_inv[1][0] = domain->h_inv[5];
+    h_inv[0][1] = 0.0;
+    h_inv[0][2] = 0.0;
+    h_inv[1][2] = 0.0;
 
     return volume;
 }
