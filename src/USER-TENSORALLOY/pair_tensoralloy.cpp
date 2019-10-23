@@ -210,7 +210,7 @@ void PairTensorAlloy::get_shift_vector(const int i, double &nx, double &ny, doub
    Calculate the interatomic distance of (i, j).
 ------------------------------------------------------------------------- */
 
-const double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j, bool square)
+double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j, bool square)
 {
     double rsq;
     double rijx, rijy, rijz;
@@ -493,7 +493,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     std::vector<string> run_ops({
         "Output/Energy/energy:0",
         "Output/Forces/forces:0",
-        "Output/Stress/Voigt/stress:0"});
+        "Output/Stress/Full/stress:0"});
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
     if (!status.ok()) {
         auto message = "TensorAlloy internal error: " + status.ToString();
@@ -516,10 +516,13 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         }
     }
 
-    auto nn_virial = outputs[2].vec<float>();
-    for (i = 0; i < 6; i++) {
-        virial[i] = static_cast<double> (nn_virial(i)) * volume * (-1.0);
-    }
+    virial[0] = static_cast<double> (-outputs[2].matrix<float>()(0, 0));
+    virial[1] = static_cast<double> (-outputs[2].matrix<float>()(1, 1));
+    virial[2] = static_cast<double> (-outputs[2].matrix<float>()(2, 2));
+    virial[3] = static_cast<double> (-outputs[2].matrix<float>()(1, 2));
+    virial[4] = static_cast<double> (-outputs[2].matrix<float>()(0, 2));
+    virial[5] = static_cast<double> (-outputs[2].matrix<float>()(0, 1));
+
     vflag_fdotr = 0;
 
     dynamic_bytes = 0;

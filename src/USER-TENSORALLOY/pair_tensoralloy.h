@@ -54,7 +54,7 @@ namespace LAMMPS_NS {
 
         template <typename T> double update_cell ();
         void get_shift_vector(int i, double &nx, double &ny, double &nz);
-        const double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
+        double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
         int inline get_local_idx(const unsigned int i) {
             return atom->tag[i] - 1;
         }
