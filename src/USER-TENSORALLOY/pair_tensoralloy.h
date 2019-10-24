@@ -25,6 +25,7 @@ namespace LAMMPS_NS {
     using tensorflow::string;
     using tensorflow::int32;
     using tensorflow::Status;
+    using tensorflow::DataType;
     using std::vector;
 
     class PairTensorAlloy : public Pair {
@@ -53,6 +54,9 @@ namespace LAMMPS_NS {
         void read_graph_model(const string& filename, const vector<string>& symbols);
 
         template <typename T> double update_cell ();
+        template <typename T> void run_once(int eflag, int vflag, DataType dtype);
+        template <typename T> void allocate_with_dtype(DataType dtype);
+
         void get_shift_vector(int i, double &nx, double &ny, double &nz);
         double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
         int inline get_local_idx(const unsigned int i) {
@@ -68,6 +72,7 @@ namespace LAMMPS_NS {
         Status load_graph(const string& filename);
         std::unique_ptr<tensorflow::Session> session;
         bool serial_mode;
+        bool use_fp64;
 
         Tensor *h_tensor;
         double h_inv[3][3];

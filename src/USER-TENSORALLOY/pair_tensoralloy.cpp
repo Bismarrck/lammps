@@ -79,6 +79,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     composition_tensor = nullptr;
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
+    row_splits_tensor = nullptr;
 
     // Use parallel mode by default.
     serial_mode = false;
@@ -99,6 +100,16 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     // Per-atom virial is not supported.
     vflag_atom = 0;
+
+    // Disable `float64` by default.
+    use_fp64 = true;
+
+    // Set the variables to their default values
+    dynamic_bytes = 0;
+    nmax = -1;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            h_inv[i][j] = 0;
 }
 
 /* ----------------------------------------------------------------------
@@ -227,7 +238,8 @@ double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j,
    The `compute` method.
 ------------------------------------------------------------------------- */
 
-void PairTensorAlloy::compute(int eflag, int vflag)
+template <typename T>
+void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
 {
     unsigned int i, j, k;
     int ii, jj, kk, inum, jnum, itype, jtype, ktype, ilocal, igsl;
@@ -273,14 +285,14 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     auto t_start = Clock::now();
 
     // Cell
-    volume = update_cell<float>();
-    auto h_tensor_matrix = h_tensor->matrix<float>();
+    volume = update_cell<T>();
+    auto h_tensor_matrix = h_tensor->matrix<T>();
 
     // Volume
-    volume_tensor->flat<float>()(0) = static_cast<float> (volume);
+    volume_tensor->flat<T>()(0) = static_cast<T> (volume);
 
     // Positions
-    auto R_tensor_mapped = R_tensor->tensor<float, 2>();
+    auto R_tensor_mapped = R_tensor->tensor<T, 2>();
     R_tensor_mapped.setConstant(0.0f);
     nij_max = (inum - 1) * inum / 2;
 
@@ -294,8 +306,8 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         R_tensor_mapped(igsl, 2) = R[ilocal][2];
     }
 
-    auto g2_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nij_max, 3}));
-    auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<float, 2>();
+    auto g2_shift_tensor = new Tensor(dtype, TensorShape({nij_max, 3}));
+    auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<T, 2>();
     g2_shift_tensor_mapped.setConstant(0);
 
     auto g2_ilist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
@@ -334,9 +346,9 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                 j0 = get_local_idx(j);
                 get_shift_vector(j, jnx, jny, jnz);
 
-                g2_shift_tensor_mapped(nij, 0) = static_cast<float> (jnx);
-                g2_shift_tensor_mapped(nij, 1) = static_cast<float> (jny);
-                g2_shift_tensor_mapped(nij, 2) = static_cast<float> (jnz);
+                g2_shift_tensor_mapped(nij, 0) = static_cast<T> (jnx);
+                g2_shift_tensor_mapped(nij, 1) = static_cast<T> (jny);
+                g2_shift_tensor_mapped(nij, 2) = static_cast<T> (jnz);
                 g2_ilist_tensor_mapped(nij) = index_map[i0];
                 g2_jlist_tensor_mapped(nij) = index_map[j0];
 
@@ -393,17 +405,17 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
-        g4_ij_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
-        g4_ik_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
-        g4_jk_shift_tensor = new Tensor(DT_FLOAT, TensorShape({nijk_max, 3}));
+        g4_ij_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
+        g4_ik_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
+        g4_jk_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
         g4_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nijk_max, 2}));
 
         auto g4_ilist_tensor_mapped = g4_ilist_tensor->tensor<int32, 1>();
         auto g4_jlist_tensor_mapped = g4_jlist_tensor->tensor<int32, 1>();
         auto g4_klist_tensor_mapped = g4_klist_tensor->tensor<int32, 1>();
-        auto g4_ij_shift_tensor_mapped = g4_ij_shift_tensor->tensor<float, 2>();
-        auto g4_ik_shift_tensor_mapped = g4_ik_shift_tensor->tensor<float, 2>();
-        auto g4_jk_shift_tensor_mapped = g4_jk_shift_tensor->tensor<float, 2>();
+        auto g4_ij_shift_tensor_mapped = g4_ij_shift_tensor->tensor<T, 2>();
+        auto g4_ik_shift_tensor_mapped = g4_ik_shift_tensor->tensor<T, 2>();
+        auto g4_jk_shift_tensor_mapped = g4_jk_shift_tensor->tensor<T, 2>();
         auto g4_v2gmap_tensor_mapped = g4_v2gmap_tensor->tensor<int32, 2>();
 
         g4_ilist_tensor_mapped.setConstant(0);
@@ -450,17 +462,17 @@ void PairTensorAlloy::compute(int eflag, int vflag)
                             g4_jlist_tensor_mapped(nijk) = index_map[j0];
                             g4_klist_tensor_mapped(nijk) = index_map[k0];
 
-                            g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<float> (jnx);
-                            g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<float> (jny);
-                            g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<float> (jnz);
+                            g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<T> (jnx);
+                            g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<T> (jny);
+                            g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<T> (jnz);
 
-                            g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx);
-                            g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny);
-                            g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz);
+                            g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx);
+                            g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny);
+                            g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz);
 
-                            g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<float> (knx - jnx);
-                            g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<float> (kny - jny);
-                            g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<float> (knz - jnz);
+                            g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx - jnx);
+                            g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny - jny);
+                            g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz - jnz);
 
                             offset = IJK(itype, jtype, ktype, model_N);
                             g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
@@ -502,10 +514,10 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     auto t_run = Clock::now();
 
     if (eflag_global) {
-        eng_vdwl = outputs[0].scalar<float>().data()[0];
+        eng_vdwl = outputs[0].scalar<T>().data()[0];
     }
 
-    auto nn_gsl_forces = outputs[1].matrix<float>();
+    auto nn_gsl_forces = outputs[1].matrix<T>();
     const int32 *reverse_map = vap->get_reverse_map();
     for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
         ilocal = reverse_map[igsl];
@@ -516,12 +528,12 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         }
     }
 
-    virial[0] = static_cast<double> (-outputs[2].matrix<float>()(0, 0));
-    virial[1] = static_cast<double> (-outputs[2].matrix<float>()(1, 1));
-    virial[2] = static_cast<double> (-outputs[2].matrix<float>()(2, 2));
-    virial[3] = static_cast<double> (-outputs[2].matrix<float>()(1, 2));
-    virial[4] = static_cast<double> (-outputs[2].matrix<float>()(0, 2));
-    virial[5] = static_cast<double> (-outputs[2].matrix<float>()(0, 1));
+    virial[0] = static_cast<double> (-outputs[2].matrix<T>()(0, 0));
+    virial[1] = static_cast<double> (-outputs[2].matrix<T>()(1, 1));
+    virial[2] = static_cast<double> (-outputs[2].matrix<T>()(2, 2));
+    virial[3] = static_cast<double> (-outputs[2].matrix<T>()(1, 2));
+    virial[4] = static_cast<double> (-outputs[2].matrix<T>()(0, 2));
+    virial[5] = static_cast<double> (-outputs[2].matrix<T>()(0, 1));
 
     vflag_fdotr = 0;
 
@@ -574,11 +586,22 @@ void PairTensorAlloy::compute(int eflag, int vflag)
     }
 }
 
+
+void PairTensorAlloy::compute(int eflag, int vflag)
+{
+    if (use_fp64) {
+        run_once<double>(eflag, vflag, DataType::DT_DOUBLE);
+    } else {
+        run_once<float>(eflag, vflag, DataType::DT_FLOAT);
+    }
+}
+
 /* ----------------------------------------------------------------------
    allocate pair_style arrays
 ------------------------------------------------------------------------- */
 
-void PairTensorAlloy::allocate()
+template <typename T>
+void PairTensorAlloy::allocate_with_dtype(DataType dtype)
 {
     if (vap == nullptr) {
         error->all(FLERR, "VAP is not succesfully initialized.");
@@ -603,15 +626,15 @@ void PairTensorAlloy::allocate()
     memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
 
     // Lattice
-    h_tensor = new Tensor(DT_FLOAT, TensorShape({3, 3}));
-    h_tensor->tensor<float, 2>().setConstant(0.f);
+    h_tensor = new Tensor(dtype, TensorShape({3, 3}));
+    h_tensor->tensor<T, 2>().setConstant(0.f);
 
     // Positions
-    R_tensor = new Tensor(DT_FLOAT, TensorShape({vap->get_n_atoms_vap(), 3}));
-    R_tensor->tensor<float, 2>().setConstant(0.f);
+    R_tensor = new Tensor(dtype, TensorShape({vap->get_n_atoms_vap(), 3}));
+    R_tensor->tensor<T, 2>().setConstant(0.f);
 
     // Volume
-    volume_tensor = new Tensor(DT_FLOAT, TensorShape({}));
+    volume_tensor = new Tensor(dtype, TensorShape({}));
 
     // row splits tensor
     row_splits_tensor = new Tensor(DT_INT32, TensorShape({model_N}));
@@ -621,10 +644,10 @@ void PairTensorAlloy::allocate()
     }
 
     // Atom masks tensor
-    atom_mask_tensor = new Tensor(DT_FLOAT, TensorShape({vap->get_n_atoms_vap()}));
+    atom_mask_tensor = new Tensor(dtype, TensorShape({vap->get_n_atoms_vap()}));
     auto atom_mask_ptr = vap->get_atom_mask();
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
-        atom_mask_tensor->tensor<float, 1>()(i) = atom_mask_ptr[i];
+        atom_mask_tensor->tensor<T, 1>()(i) = static_cast<T>(atom_mask_ptr[i]);
     }
 
     // N_atom_vap tensor
@@ -632,14 +655,23 @@ void PairTensorAlloy::allocate()
     n_atoms_vap_tensor->flat<int32>()(0) = vap->get_n_atoms_vap();
 
     // Pulay stress tensor
-    pulay_stress_tensor = new Tensor(DT_FLOAT, TensorShape());
-    pulay_stress_tensor->flat<float>()(0) = 0.0f;
+    pulay_stress_tensor = new Tensor(dtype, TensorShape());
+    pulay_stress_tensor->flat<T>()(0) = 0.0f;
 
     // Composition tensor
-    composition_tensor = new Tensor(DT_FLOAT, TensorShape({model_ntypes}));
-    composition_tensor->flat<float>().setConstant(0.0);
+    composition_tensor = new Tensor(dtype, TensorShape({model_ntypes}));
+    composition_tensor->flat<T>().setConstant(0.0);
     for (i = 0; i < atom->nlocal; i++) {
-        composition_tensor->flat<float>()(atom->type[i] - 1) += 1.0f;
+        composition_tensor->flat<T>()(atom->type[i] - 1) += 1.0f;
+    }
+}
+
+void PairTensorAlloy::allocate()
+{
+    if (use_fp64) {
+        allocate_with_dtype<double>(DataType::DT_DOUBLE);
+    } else {
+        allocate_with_dtype<float>(DataType::DT_FLOAT);
     }
 }
 
@@ -757,6 +789,14 @@ void PairTensorAlloy::read_graph_model(
     status = graph_model.read(outputs[0], graph_model_path, symbols);
     if (!status.ok()) {
         error->all(FLERR, status.error_message().c_str());
+    }
+
+    outputs.clear();
+    status = session->Run({}, {"Transformer/precision:0"}, {}, &outputs);
+    if (status.ok() && outputs[0].flat<string>().data()[0] == "high") {
+        use_fp64 = true;
+    } else {
+        use_fp64 = false;
     }
 }
 
