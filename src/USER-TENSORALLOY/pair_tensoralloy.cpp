@@ -528,12 +528,13 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
         }
     }
 
+    // Lammps uses a special Voigt order: xx yy zz xy xz yz
     virial[0] = static_cast<double> (-outputs[2].matrix<T>()(0, 0));
     virial[1] = static_cast<double> (-outputs[2].matrix<T>()(1, 1));
     virial[2] = static_cast<double> (-outputs[2].matrix<T>()(2, 2));
-    virial[3] = static_cast<double> (-outputs[2].matrix<T>()(1, 2));
-    virial[4] = static_cast<double> (-outputs[2].matrix<T>()(0, 2));
-    virial[5] = static_cast<double> (-outputs[2].matrix<T>()(0, 1));
+    virial[3] = static_cast<double> (-outputs[2].matrix<T>()(1, 0));
+    virial[4] = static_cast<double> (-outputs[2].matrix<T>()(2, 0));
+    virial[5] = static_cast<double> (-outputs[2].matrix<T>()(2, 1));
 
     vflag_fdotr = 0;
 
