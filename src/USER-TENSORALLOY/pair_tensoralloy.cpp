@@ -792,7 +792,7 @@ void PairTensorAlloy::read_graph_model(
     }
 
     outputs.clear();
-    status = session->Run({}, {"Transformer/precision:0"}, {}, &outputs);
+    status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
     if (status.ok() && outputs[0].flat<string>().data()[0] == "high") {
         use_fp64 = true;
     } else {
