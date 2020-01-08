@@ -104,6 +104,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     // Disable `float64` by default.
     use_fp64 = true;
 
+    // Use legacy keys by default.
+    use_legacy_keys = true;
+
     // Set the variables to their default values
     dynamic_bytes = 0;
     nmax = -1;
@@ -378,18 +381,27 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
 
     std::vector<std::pair<string, Tensor>> feed_dict({
         {"Placeholders/positions", *R_tensor},
-        {"Placeholders/cells", *h_tensor},
-        {"Placeholders/n_atoms_plus_virt", *n_atoms_vap_tensor},
-        {"Placeholders/composition", *composition_tensor},
         {"Placeholders/volume", *volume_tensor},
-        {"Placeholders/mask", *atom_mask_tensor},
-        {"Placeholders/row_splits", *row_splits_tensor},
+        {"Placeholders/pulay_stress", *pulay_stress_tensor},
+        {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
         {"Placeholders/g2.ilist", *g2_ilist_tensor},
         {"Placeholders/g2.jlist", *g2_jlist_tensor},
-        {"Placeholders/g2.shift", *g2_shift_tensor},
-        {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
-        {"Placeholders/pulay_stress", *pulay_stress_tensor}
+        {"Placeholders/row_splits", *row_splits_tensor},
     });
+
+    if (use_legacy_keys) {
+        feed_dict.emplace_back("Placeholders/cells", *h_tensor);
+        feed_dict.emplace_back("Placeholders/n_atoms_plus_virt", *n_atoms_vap_tensor);
+        feed_dict.emplace_back("Placeholders/composition", *composition_tensor);
+        feed_dict.emplace_back("Placeholders/mask", *atom_mask_tensor);
+        feed_dict.emplace_back("Placeholders/g2.shift", *g2_shift_tensor);
+    } else {
+        feed_dict.emplace_back("Placeholders/cell", *h_tensor);
+        feed_dict.emplace_back("Placeholders/n_atoms_vap", *n_atoms_vap_tensor);
+        feed_dict.emplace_back("Placeholders/compositions", *composition_tensor);
+        feed_dict.emplace_back("Placeholders/atom_masks", *atom_mask_tensor);
+        feed_dict.emplace_back("Placeholders/g2.n1", *g2_shift_tensor);
+    }
 
     auto t_g2 = Clock::now();
 
@@ -484,19 +496,25 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
                 }
             }
         }
-        std::vector<std::pair<string, Tensor>> addon({
-            {"Placeholders/g4.v2g_map", *g4_v2gmap_tensor},
-            {"Placeholders/g4.ij.ilist", *g4_ilist_tensor},
-            {"Placeholders/g4.ij.jlist", *g4_jlist_tensor},
-            {"Placeholders/g4.ik.ilist", *g4_ilist_tensor},
-            {"Placeholders/g4.ik.klist", *g4_klist_tensor},
-            {"Placeholders/g4.jk.jlist", *g4_jlist_tensor},
-            {"Placeholders/g4.jk.klist", *g4_klist_tensor},
-            {"Placeholders/g4.shift.ij", *g4_ij_shift_tensor},
-            {"Placeholders/g4.shift.ik", *g4_ik_shift_tensor},
-            {"Placeholders/g4.shift.jk", *g4_jk_shift_tensor},
-        });
-        feed_dict.insert(std::end(feed_dict), std::begin(addon), std::end(addon));
+        feed_dict.emplace_back("Placeholders/g4.v2g_map", *g4_v2gmap_tensor);
+        if (use_legacy_keys) {
+            feed_dict.emplace_back("Placeholders/g4.ij.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ij.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ik.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ik.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jk.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jk.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ij_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ik_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.jk", *g4_jk_shift_tensor);
+        } else {
+            feed_dict.emplace_back("Placeholders/g4.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n1", *g4_ij_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n2", *g4_ik_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n3", *g4_jk_shift_tensor);
+        }
     }
 
     auto t_g4 = Clock::now();
@@ -620,11 +638,11 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     int lmp_N = lmp_ntypes + 1;
     int i, j;
 
+    memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
     memory->create(setflag, lmp_N, lmp_N, "pair:setflag");
     for (i = 1; i < lmp_N; i++)
         for (j = i; j <= lmp_N; j++)
             setflag[i][j] = 0;
-    memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
 
     // Lattice
     h_tensor = new Tensor(dtype, TensorShape({3, 3}));
@@ -798,6 +816,13 @@ void PairTensorAlloy::read_graph_model(
         use_fp64 = true;
     } else {
         use_fp64 = false;
+    }
+
+    outputs.clear();
+    status = session->Run({}, {"Metadata/use_legacy_keys"}, {}, &outputs);
+    if (status.ok() && outputs[0].flat<string>().data()[0] == "false") {
+        use_legacy_keys = false;
+        std::cout << "Use new VAP keys" << std::endl;
     }
 }
 

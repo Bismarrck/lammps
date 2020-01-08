@@ -73,6 +73,7 @@ namespace LAMMPS_NS {
         std::unique_ptr<tensorflow::Session> session;
         bool serial_mode;
         bool use_fp64;
+        bool use_legacy_keys;
 
         Tensor *h_tensor;
         double h_inv[3][3];
