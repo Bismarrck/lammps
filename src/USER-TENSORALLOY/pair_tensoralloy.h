@@ -55,6 +55,7 @@ namespace LAMMPS_NS {
 
         template <typename T> double update_cell ();
         template <typename T> void run_once(int eflag, int vflag, DataType dtype);
+        template <typename T> void run_once_universal(int eflag, int vflag, DataType dtype);
         template <typename T> void allocate_with_dtype(DataType dtype);
 
         void get_shift_vector(int i, double &nx, double &ny, double &nz);
@@ -81,7 +82,10 @@ namespace LAMMPS_NS {
         Tensor *R_tensor;
         Tensor *volume_tensor;
         Tensor *n_atoms_vap_tensor;
+        Tensor *nnl_max_tensor;
         Tensor *pulay_stress_tensor;
+        Tensor *etemperature_tensor;
+        Tensor *eentropy_tensor;
         Tensor *composition_tensor;
         Tensor *atom_mask_tensor;
         Tensor *row_splits_tensor;

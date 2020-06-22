@@ -79,6 +79,8 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     composition_tensor = nullptr;
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
+    etemperature_tensor = nullptr;
+    eentropy_tensor = nullptr;
     row_splits_tensor = nullptr;
 
     // Use parallel mode by default.
@@ -112,7 +114,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     nmax = -1;
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
-            h_inv[i][j] = 0;
+            h_inv[i][j] = 0.0;
 }
 
 /* ----------------------------------------------------------------------
@@ -145,8 +147,17 @@ PairTensorAlloy::~PairTensorAlloy()
         delete n_atoms_vap_tensor;
         n_atoms_vap_tensor = nullptr;
 
+        delete nnl_max_tensor;
+        nnl_max_tensor = nullptr;
+
         delete pulay_stress_tensor;
         pulay_stress_tensor = nullptr;
+
+        delete etemperature_tensor;
+        etemperature_tensor = nullptr;
+
+        delete eentropy_tensor;
+        eentropy_tensor = nullptr;
 
         delete composition_tensor;
         composition_tensor = nullptr;
@@ -606,12 +617,381 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
 }
 
 
+template <typename T>
+void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
+{
+    unsigned int i, j, k;
+    int ii, jj, kk, inum, jnum, itype, jtype, ktype, ilocal, igsl;
+    int nij_max = 0;
+    int nij = 0;
+    int nijk = 0;
+    int nijk_max = 0;
+    int nnl = 0;
+    int nnl_max = 0;
+    int offset;
+    double rsq;
+    double rjk2, rik2;
+    double volume;
+    int i0, j0, k0;
+    double jnx, jny, jnz;
+    double knx, kny, knz;
+    int *ilist, *jlist, *numneigh, **firstneigh;
+    const int32 *index_map;
+    bool **shortneigh;
+    int model_N = graph_model.get_n_elements() + 1;
+    bool use_timer = false;
+
+    const char * use_timer_flag = getenv("USE_TENSORALLOY_TIMER");
+    if (use_timer_flag && strcmp(use_timer_flag, "true") == 0) {
+        use_timer  = true;
+    }
+
+    ev_init(eflag, vflag);
+
+    // grow local arrays if necessary
+    // need to be atom->nmax in length
+    if (atom->nmax > nmax) {
+        nmax = atom->nmax;
+    }
+
+    double **R = atom->x;
+
+    inum = list->inum;
+    ilist = list->ilist;
+    numneigh = list->numneigh;
+    firstneigh = list->firstneigh;
+    index_map = vap->get_index_map();
+    shortneigh = new bool* [inum];
+
+    auto t_start = Clock::now();
+
+    // Cell
+    volume = update_cell<T>();
+    auto h_tensor_matrix = h_tensor->matrix<T>();
+
+    // Volume
+    volume_tensor->flat<T>()(0) = static_cast<T> (volume);
+
+    // Positions
+    auto R_tensor_mapped = R_tensor->tensor<T, 2>();
+    R_tensor_mapped.setConstant(0.0f);
+    nij_max = (inum - 1) * inum / 2;
+
+    for (ii = 0; ii < inum; ii++) {
+        ilocal = ilist[ii];
+        igsl = index_map[ilocal];
+        jnum = numneigh[ilocal];
+        nij_max += jnum;
+        R_tensor_mapped(igsl, 0) = R[ilocal][0];
+        R_tensor_mapped(igsl, 1) = R[ilocal][1];
+        R_tensor_mapped(igsl, 2) = R[ilocal][2];
+    }
+
+    auto g2_shift_tensor = new Tensor(dtype, TensorShape({nij_max, 3}));
+    auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<T, 2>();
+    g2_shift_tensor_mapped.setConstant(0);
+
+    auto g2_ilist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
+    auto g2_ilist_tensor_mapped = g2_ilist_tensor->tensor<int32, 1>();
+    g2_ilist_tensor_mapped.setConstant(0);
+
+    auto g2_jlist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
+    auto g2_jlist_tensor_mapped = g2_jlist_tensor->tensor<int32, 1>();
+    g2_jlist_tensor_mapped.setConstant(0);
+
+    auto g2_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
+    auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
+    g2_v2gmap_tensor_mapped.setConstant(0);
+
+    for (ii = 0; ii < inum; ii++) {
+        i = ilist[ii];
+        i0 = get_local_idx(i);
+        itype = atom->type[i];
+        jlist = firstneigh[i];
+        jnum = numneigh[i];
+        shortneigh[i] = new bool [jnum + ii];
+
+        for (jj = 0; jj < jnum + ii; jj++) {
+            if (jj < jnum) {
+                j = jlist[jj];
+                j &= (unsigned)NEIGHMASK;
+            } else {
+                j = jj - jnum;
+            }
+            shortneigh[i][jj] = false;
+            rsq = get_interatomic_distance(i, j);
+
+            if (rsq < cutforcesq) {
+                shortneigh[i][jj] = true;
+                jtype = atom->type[j];
+                j0 = get_local_idx(j);
+                get_shift_vector(j, jnx, jny, jnz);
+
+                g2_shift_tensor_mapped(nij, 0) = static_cast<T> (jnx);
+                g2_shift_tensor_mapped(nij, 1) = static_cast<T> (jny);
+                g2_shift_tensor_mapped(nij, 2) = static_cast<T> (jnz);
+                g2_ilist_tensor_mapped(nij) = index_map[i0];
+                g2_jlist_tensor_mapped(nij) = index_map[j0];
+
+                offset = IJ(itype, jtype, model_N);
+                g2_v2gmap_tensor_mapped(nij, 0) = index_map[i0];
+                g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
+                nij += 1;
+
+                if (graph_model.angular()) {
+                    for (kk = jj + 1; kk < jnum + ii; kk++) {
+                        if (kk < jnum) {
+                            k = jlist[kk];
+                            k &= (unsigned)NEIGHMASK;
+                        } else {
+                            k = kk - jnum;
+                        }
+                        rik2 = get_interatomic_distance(i, k);
+                        rjk2 = get_interatomic_distance(j, k);
+                        if (rik2 < cutforcesq && rjk2 < cutforcesq) {
+                            nijk_max += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<std::pair<string, Tensor>> feed_dict({
+        {"Placeholders/positions", *R_tensor},
+        {"Placeholders/n_atoms_vap", *n_atoms_vap_tensor},
+        // nnl_max
+        {"Placeholders/atom_masks", *atom_mask_tensor},
+        {"Placeholders/cell", *h_tensor},
+        {"Placeholders/volume", *volume_tensor},
+        {"Placeholders/pulay_stress", *pulay_stress_tensor},
+        {"Placeholders/etemperature", *etemperature_tensor},
+        {"Placeholders/eentropy", *eentropy_tensor},
+        {"Placeholders/compositions", *composition_tensor},
+        {"Placeholders/row_splits", *row_splits_tensor},
+        {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
+        {"Placeholders/g2.ilist", *g2_ilist_tensor},
+        {"Placeholders/g2.jlist", *g2_jlist_tensor},
+        {"Placeholders/g2.n1", *g2_shift_tensor},
+    });
+
+    auto t_g2 = Clock::now();
+
+    Tensor *g4_v2gmap_tensor = nullptr;
+    Tensor *g4_ilist_tensor = nullptr;
+    Tensor *g4_jlist_tensor = nullptr;
+    Tensor *g4_klist_tensor = nullptr;
+    Tensor *g4_ij_shift_tensor = nullptr;
+    Tensor *g4_ik_shift_tensor = nullptr;
+    Tensor *g4_jk_shift_tensor = nullptr;
+
+    if (graph_model.angular()) {
+        g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
+        g4_ij_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
+        g4_ik_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
+        g4_jk_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
+        g4_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nijk_max, 2}));
+
+        auto g4_ilist_tensor_mapped = g4_ilist_tensor->tensor<int32, 1>();
+        auto g4_jlist_tensor_mapped = g4_jlist_tensor->tensor<int32, 1>();
+        auto g4_klist_tensor_mapped = g4_klist_tensor->tensor<int32, 1>();
+        auto g4_ij_shift_tensor_mapped = g4_ij_shift_tensor->tensor<T, 2>();
+        auto g4_ik_shift_tensor_mapped = g4_ik_shift_tensor->tensor<T, 2>();
+        auto g4_jk_shift_tensor_mapped = g4_jk_shift_tensor->tensor<T, 2>();
+        auto g4_v2gmap_tensor_mapped = g4_v2gmap_tensor->tensor<int32, 2>();
+
+        g4_ilist_tensor_mapped.setConstant(0);
+        g4_jlist_tensor_mapped.setConstant(0);
+        g4_klist_tensor_mapped.setConstant(0);
+        g4_ij_shift_tensor_mapped.setConstant(0.0f);
+        g4_ik_shift_tensor_mapped.setConstant(0.0f);
+        g4_jk_shift_tensor_mapped.setConstant(0.0f);
+        g4_v2gmap_tensor_mapped.setConstant(0);
+
+        for (ii = 0; ii < inum; ii++) {
+            i = ilist[ii];
+            i0 = get_local_idx(i);
+            itype = atom->type[i];
+            jlist = firstneigh[i];
+            jnum = numneigh[i];
+
+            for (jj = 0; jj < jnum + ii; jj++) {
+                if (jj < jnum) {
+                    j = jlist[jj];
+                    j &= (unsigned)NEIGHMASK;
+                } else {
+                    j = jj - jnum;
+                }
+
+                if (shortneigh[i][jj]) {
+                    jtype = atom->type[j];
+                    j0 = get_local_idx(j);
+                    get_shift_vector(j, jnx, jny, jnz);
+
+                    for (kk = jj + 1; kk < jnum + ii; kk++) {
+                        if (kk < jnum) {
+                            k = jlist[kk];
+                            k &= (unsigned)NEIGHMASK;
+                        } else {
+                            k = kk - jnum;
+                        }
+                        if (shortneigh[i][kk] && get_interatomic_distance(j, k) < cutforcesq) {
+                            ktype = atom->type[k];
+                            k0 = get_local_idx(k);
+                            get_shift_vector(k, knx, kny, knz);
+
+                            g4_ilist_tensor_mapped(nijk) = index_map[i0];
+                            g4_jlist_tensor_mapped(nijk) = index_map[j0];
+                            g4_klist_tensor_mapped(nijk) = index_map[k0];
+
+                            g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<T> (jnx);
+                            g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<T> (jny);
+                            g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<T> (jnz);
+
+                            g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx);
+                            g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny);
+                            g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz);
+
+                            g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx - jnx);
+                            g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny - jny);
+                            g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz - jnz);
+
+                            offset = IJK(itype, jtype, ktype, model_N);
+                            g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
+                            g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
+
+                            nijk += 1;
+                        }
+                    }
+                }
+            }
+        }
+        feed_dict.emplace_back("Placeholders/g4.v2g_map", *g4_v2gmap_tensor);
+        if (use_legacy_keys) {
+            feed_dict.emplace_back("Placeholders/g4.ij.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ij.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ik.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.ik.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jk.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jk.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ij_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ik_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.shift.jk", *g4_jk_shift_tensor);
+        } else {
+            feed_dict.emplace_back("Placeholders/g4.ilist", *g4_ilist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.jlist", *g4_jlist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.klist", *g4_klist_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n1", *g4_ij_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n2", *g4_ik_shift_tensor);
+            feed_dict.emplace_back("Placeholders/g4.n3", *g4_jk_shift_tensor);
+        }
+    }
+
+    auto t_g4 = Clock::now();
+
+    std::vector<Tensor> outputs;
+    std::vector<string> run_ops({
+        "Output/Energy/energy:0",
+        "Output/Forces/forces:0",
+        "Output/Stress/Full/stress:0"});
+    Status status = session->Run(feed_dict, run_ops, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "TensorAlloy internal error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    auto t_run = Clock::now();
+
+    if (eflag_global) {
+        eng_vdwl = outputs[0].scalar<T>().data()[0];
+    }
+
+    auto nn_gsl_forces = outputs[1].matrix<T>();
+    const int32 *reverse_map = vap->get_reverse_map();
+    for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
+        ilocal = reverse_map[igsl];
+        if (ilocal >= 0) {
+            atom->f[ilocal][0] = static_cast<double> (nn_gsl_forces(igsl - 1, 0));
+            atom->f[ilocal][1] = static_cast<double> (nn_gsl_forces(igsl - 1, 1));
+            atom->f[ilocal][2] = static_cast<double> (nn_gsl_forces(igsl - 1, 2));
+        }
+    }
+
+    // Lammps uses a special Voigt order: xx yy zz xy xz yz
+    virial[0] = static_cast<double> (-outputs[2].matrix<T>()(0, 0));
+    virial[1] = static_cast<double> (-outputs[2].matrix<T>()(1, 1));
+    virial[2] = static_cast<double> (-outputs[2].matrix<T>()(2, 2));
+    virial[3] = static_cast<double> (-outputs[2].matrix<T>()(1, 0));
+    virial[4] = static_cast<double> (-outputs[2].matrix<T>()(2, 0));
+    virial[5] = static_cast<double> (-outputs[2].matrix<T>()(2, 1));
+
+    vflag_fdotr = 0;
+
+    dynamic_bytes = 0;
+    dynamic_bytes += g2_shift_tensor->TotalBytes();
+    dynamic_bytes += g2_ilist_tensor->TotalBytes();
+    dynamic_bytes += g2_jlist_tensor->TotalBytes();
+    dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
+
+    auto t_efv = Clock::now();
+
+    delete g2_shift_tensor;
+    delete g2_ilist_tensor;
+    delete g2_jlist_tensor;
+    delete g2_v2gmap_tensor;
+
+    for (i = 0; i < inum; i++)
+        delete [] shortneigh[i];
+    delete [] shortneigh;
+
+    if (graph_model.angular()) {
+
+        dynamic_bytes += g4_v2gmap_tensor->TotalBytes();
+        dynamic_bytes += g4_ilist_tensor->TotalBytes();
+        dynamic_bytes += g4_jlist_tensor->TotalBytes();
+        dynamic_bytes += g4_klist_tensor->TotalBytes();
+        dynamic_bytes += g4_ij_shift_tensor->TotalBytes();
+        dynamic_bytes += g4_ik_shift_tensor->TotalBytes();
+        dynamic_bytes += g4_jk_shift_tensor->TotalBytes();
+
+        delete g4_v2gmap_tensor;
+        delete g4_ilist_tensor;
+        delete g4_jlist_tensor;
+        delete g4_klist_tensor;
+        delete g4_ij_shift_tensor;
+        delete g4_ik_shift_tensor;
+        delete g4_jk_shift_tensor;
+    }
+
+    if (use_timer) {
+        auto t_stop = Clock::now();
+        auto ms_1 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g2 - t_start).count();
+        auto ms_2 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g4 - t_g2).count();
+        auto ms_3 = std::chrono::duration_cast<std::chrono::milliseconds>(t_run - t_g4).count();
+        auto ms_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_efv - t_run).count();
+        auto ms_5 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_efv).count();
+        auto ms_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_start).count();
+        printf("nij_max %5d nijk_max %5d ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n",
+               nij_max, nijk_max, ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
+    }
+}
+
+
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-    if (use_fp64) {
-        run_once<double>(eflag, vflag, DataType::DT_DOUBLE);
+    if (graph_model.use_universal_transformer()) {
+        if (use_fp64) {
+            run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
+        } else {
+            run_once_universal<float>(eflag, vflag, DataType::DT_DOUBLE);
+        }
     } else {
-        run_once<float>(eflag, vflag, DataType::DT_FLOAT);
+        if (use_fp64) {
+            run_once<double>(eflag, vflag, DataType::DT_DOUBLE);
+        } else {
+            run_once<float>(eflag, vflag, DataType::DT_FLOAT);
+        }
     }
 }
 
@@ -673,9 +1053,20 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     n_atoms_vap_tensor = new Tensor(DT_INT32, TensorShape());
     n_atoms_vap_tensor->flat<int32>()(0) = vap->get_n_atoms_vap();
 
+    // nnl_max tensor
+    nnl_max_tensor = new Tensor(DT_INT32, TensorShape());
+
     // Pulay stress tensor
     pulay_stress_tensor = new Tensor(dtype, TensorShape());
     pulay_stress_tensor->flat<T>()(0) = 0.0f;
+
+    // electron temperature tensor
+    etemperature_tensor = new Tensor(dtype, TensorShape());
+    etemperature_tensor->flat<T>()(0) = 0.0f;
+
+    // electron entropy energy tensor
+    eentropy_tensor = new Tensor(dtype, TensorShape());
+    eentropy_tensor->flat<T>()(0) = 0.0f;
 
     // Composition tensor
     composition_tensor = new Tensor(dtype, TensorShape({model_ntypes}));
@@ -809,6 +1200,7 @@ void PairTensorAlloy::read_graph_model(
     if (!status.ok()) {
         error->all(FLERR, status.error_message().c_str());
     }
+    std::cout << "Transformer class: " << graph_model.get_transformer_name() << std::endl;
 
     outputs.clear();
     status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
@@ -918,7 +1310,10 @@ double PairTensorAlloy::tensors_memory_usage()
     bytes += R_tensor->TotalBytes();
     bytes += volume_tensor->TotalBytes();
     bytes += atom_mask_tensor->TotalBytes();
+    bytes += nnl_max_tensor->TotalBytes();
     bytes += pulay_stress_tensor->TotalBytes();
+    bytes += eentropy_tensor->TotalBytes();
+    bytes += etemperature_tensor->TotalBytes();
     bytes += atom_mask_tensor->TotalBytes();
     bytes += composition_tensor->TotalBytes();
     bytes += dynamic_bytes;
