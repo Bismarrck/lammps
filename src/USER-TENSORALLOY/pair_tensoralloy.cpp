@@ -18,7 +18,6 @@
 #include <vector>
 #include <map>
 #include <iostream>
-#include <iomanip>
 #include <domain.h>
 #include <chrono>
 
@@ -37,6 +36,7 @@
 #include "tensorflow/core/public/session.h"
 
 #include "pair_tensoralloy.h"
+#include "tensoralloy_utils.h"
 
 using namespace LAMMPS_NS;
 
@@ -51,8 +51,8 @@ using tensorflow::TensorShape;
 typedef std::chrono::high_resolution_clock Clock;
 
 #define MAXLINE 1024
-#define IJ(i,j,n) i * n + j
-#define IJK(i,j,k,n) i * n * n + j * n + k
+#define IJ2num(i,j,n) i * n + j
+#define IJK2num(i,j,k,n) i * n * n + j * n + k
 
 
 /* ---------------------------------------------------------------------- */
@@ -68,6 +68,8 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     g2_offset_map = nullptr;
     g4_offset_map = nullptr;
+    radial_interactions = nullptr;
+    g2_counters = nullptr;
     vap = nullptr;
     session = nullptr;
 
@@ -112,9 +114,11 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     // Set the variables to their default values
     dynamic_bytes = 0;
     nmax = -1;
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
             h_inv[i][j] = 0.0;
+        }
+    }
 }
 
 /* ----------------------------------------------------------------------
@@ -134,6 +138,8 @@ PairTensorAlloy::~PairTensorAlloy()
     if (allocated) {
         memory->destroy(setflag);
         memory->destroy(cutsq);
+        memory->destroy(radial_interactions);
+        memory->destroy(g2_counters);
 
         delete R_tensor;
         R_tensor = nullptr;
@@ -293,7 +299,7 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
     ilist = list->ilist;
     numneigh = list->numneigh;
     firstneigh = list->firstneigh;
-    index_map = vap->get_index_map();
+    index_map = vap->get_local_to_vap_map();
     shortneigh = new bool* [inum];
 
     auto t_start = Clock::now();
@@ -366,7 +372,7 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
                 g2_ilist_tensor_mapped(nij) = index_map[i0];
                 g2_jlist_tensor_mapped(nij) = index_map[j0];
 
-                offset = IJ(itype, jtype, model_N);
+                offset = IJ2num(itype, jtype, model_N);
                 g2_v2gmap_tensor_mapped(nij, 0) = index_map[i0];
                 g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
                 nij += 1;
@@ -497,7 +503,7 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
                             g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny - jny);
                             g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz - jnz);
 
-                            offset = IJK(itype, jtype, ktype, model_N);
+                            offset = IJK2num(itype, jtype, ktype, model_N);
                             g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
                             g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
 
@@ -547,7 +553,7 @@ void PairTensorAlloy::run_once(int eflag, int vflag, DataType dtype)
     }
 
     auto nn_gsl_forces = outputs[1].matrix<T>();
-    const int32 *reverse_map = vap->get_reverse_map();
+    const int32 *reverse_map = vap->get_vap_to_local_map();
     for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
         ilocal = reverse_map[igsl];
         if (ilocal >= 0) {
@@ -622,13 +628,14 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 {
     unsigned int i, j, k;
     int ii, jj, kk, inum, jnum, itype, jtype, ktype, ilocal, igsl;
+    int ijtype;
     int nij_max = 0;
     int nij = 0;
     int nijk = 0;
     int nijk_max = 0;
-    int nnl = 0;
     int nnl_max = 0;
     int offset;
+    int inc;
     double rsq;
     double rjk2, rik2;
     double volume;
@@ -636,7 +643,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     double jnx, jny, jnz;
     double knx, kny, knz;
     int *ilist, *jlist, *numneigh, **firstneigh;
-    const int32 *index_map;
+    const int32 *local_to_vap_map;
     bool **shortneigh;
     int model_N = graph_model.get_n_elements() + 1;
     bool use_timer = false;
@@ -660,7 +667,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     ilist = list->ilist;
     numneigh = list->numneigh;
     firstneigh = list->firstneigh;
-    index_map = vap->get_index_map();
+    local_to_vap_map = vap->get_local_to_vap_map();
     shortneigh = new bool* [inum];
 
     auto t_start = Clock::now();
@@ -679,7 +686,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
     for (ii = 0; ii < inum; ii++) {
         ilocal = ilist[ii];
-        igsl = index_map[ilocal];
+        igsl = local_to_vap_map[ilocal];
         jnum = numneigh[ilocal];
         nij_max += jnum;
         R_tensor_mapped(igsl, 0) = R[ilocal][0];
@@ -726,41 +733,36 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                 jtype = atom->type[j];
                 j0 = get_local_idx(j);
                 get_shift_vector(j, jnx, jny, jnz);
+                ijtype = radial_interactions[itype][jtype];
 
                 g2_shift_tensor_mapped(nij, 0) = static_cast<T> (jnx);
                 g2_shift_tensor_mapped(nij, 1) = static_cast<T> (jny);
                 g2_shift_tensor_mapped(nij, 2) = static_cast<T> (jnz);
-                g2_ilist_tensor_mapped(nij) = index_map[i0];
-                g2_jlist_tensor_mapped(nij) = index_map[j0];
+                g2_ilist_tensor_mapped(nij) = local_to_vap_map[i0];
+                g2_jlist_tensor_mapped(nij) = local_to_vap_map[j0];
 
-                offset = IJ(itype, jtype, model_N);
-                g2_v2gmap_tensor_mapped(nij, 0) = index_map[i0];
-                g2_v2gmap_tensor_mapped(nij, 1) = g2_offset_map[offset];
+                inc = g2_counters[local_to_vap_map[i0]][ijtype];
+                nnl_max = MAX(inc + 1, nnl_max);
+
+                offset = IJ2num(itype, jtype, model_N);
+                g2_v2gmap_tensor_mapped(nij, 0) = ijtype;
+                g2_v2gmap_tensor_mapped(nij, 1) = local_to_vap_map[i0];
+                g2_v2gmap_tensor_mapped(nij, 2) = inc;
+                g2_v2gmap_tensor_mapped(nij, 3) = 0;
+                g2_v2gmap_tensor_mapped(nij, 4) = 1;
                 nij += 1;
-
-                if (graph_model.angular()) {
-                    for (kk = jj + 1; kk < jnum + ii; kk++) {
-                        if (kk < jnum) {
-                            k = jlist[kk];
-                            k &= (unsigned)NEIGHMASK;
-                        } else {
-                            k = kk - jnum;
-                        }
-                        rik2 = get_interatomic_distance(i, k);
-                        rjk2 = get_interatomic_distance(j, k);
-                        if (rik2 < cutforcesq && rjk2 < cutforcesq) {
-                            nijk_max += 1;
-                        }
-                    }
-                }
+                g2_counters[local_to_vap_map[i0]][ijtype] += 1;
             }
         }
     }
 
+    // Set the nnl_max
+    nnl_max_tensor->flat<int32>()(0) = static_cast<int32> (nnl_max + 1);
+
     std::vector<std::pair<string, Tensor>> feed_dict({
         {"Placeholders/positions", *R_tensor},
         {"Placeholders/n_atoms_vap", *n_atoms_vap_tensor},
-        // nnl_max
+        {"Placeholders/nnl_max", *nnl_max_tensor},
         {"Placeholders/atom_masks", *atom_mask_tensor},
         {"Placeholders/cell", *h_tensor},
         {"Placeholders/volume", *volume_tensor},
@@ -842,9 +844,9 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                             k0 = get_local_idx(k);
                             get_shift_vector(k, knx, kny, knz);
 
-                            g4_ilist_tensor_mapped(nijk) = index_map[i0];
-                            g4_jlist_tensor_mapped(nijk) = index_map[j0];
-                            g4_klist_tensor_mapped(nijk) = index_map[k0];
+                            g4_ilist_tensor_mapped(nijk) = local_to_vap_map[i0];
+                            g4_jlist_tensor_mapped(nijk) = local_to_vap_map[j0];
+                            g4_klist_tensor_mapped(nijk) = local_to_vap_map[k0];
 
                             g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<T> (jnx);
                             g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<T> (jny);
@@ -858,8 +860,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                             g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny - jny);
                             g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz - jnz);
 
-                            offset = IJK(itype, jtype, ktype, model_N);
-                            g4_v2gmap_tensor_mapped(nijk, 0) = index_map[i0];
+                            offset = IJK2num(itype, jtype, ktype, model_N);
+                            g4_v2gmap_tensor_mapped(nijk, 0) = local_to_vap_map[i0];
                             g4_v2gmap_tensor_mapped(nijk, 1) = g4_offset_map[offset];
 
                             nijk += 1;
@@ -908,7 +910,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     }
 
     auto nn_gsl_forces = outputs[1].matrix<T>();
-    const int32 *reverse_map = vap->get_reverse_map();
+    const int32 *reverse_map = vap->get_vap_to_local_map();
     for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
         ilocal = reverse_map[igsl];
         if (ilocal >= 0) {
@@ -1020,9 +1022,32 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
 
     memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
     memory->create(setflag, lmp_N, lmp_N, "pair:setflag");
-    for (i = 1; i < lmp_N; i++)
-        for (j = i; j <= lmp_N; j++)
+    for (i = 1; i < lmp_N; i++) {
+        for (j = i; j <= lmp_N; j++) {
             setflag[i][j] = 0;
+        }
+    }
+
+    // Radial interactions
+    memory->create(radial_interactions, lmp_N, lmp_N, "pair:radial_interactions");
+    for (i = 1; i < lmp_N; i++) {
+        radial_interactions[i][i] = 0;
+        int val = 1;
+        for (j = 1; j <= lmp_N; j++) {
+            if (j != i) {
+                radial_interactions[i][j] = val;
+                val ++;
+            }
+        }
+    }
+
+    // Radial counters
+    memory->create(g2_counters, vap->get_n_atoms_vap(), lmp_N, "pair:g2_counters");
+    for (i = 0; i < vap->get_n_atoms_vap(); i++) {
+        for (j = 0; j < lmp_N; j++) {
+            g2_counters[i][j] = 0;
+        }
+    }
 
     // Lattice
     h_tensor = new Tensor(dtype, TensorShape({3, 3}));
@@ -1044,7 +1069,7 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
 
     // Atom masks tensor
     atom_mask_tensor = new Tensor(dtype, TensorShape({vap->get_n_atoms_vap()}));
-    auto atom_mask_ptr = vap->get_atom_mask();
+    auto atom_mask_ptr = vap->get_atom_masks();
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
         atom_mask_tensor->tensor<T, 1>()(i) = static_cast<T>(atom_mask_ptr[i]);
     }
@@ -1149,14 +1174,14 @@ void PairTensorAlloy::init_offset_maps()
 
     memory->create(g2_offset_map, N * N, "pair:g2_offset_map");
     for (i = 1; i < N; i++) {
-        pos = IJ(i, i, N);
+        pos = IJ2num(i, i, N);
         g2_offset_map[pos] = offset;
         offset += g2_size;
         for (j = 1; j < N; j++) {
             if (j == i) {
                 continue;
             }
-            pos = IJ(i, j, N);
+            pos = IJ2num(i, j, N);
             g2_offset_map[pos] = offset;
             offset += g2_size;
         }
@@ -1169,7 +1194,7 @@ void PairTensorAlloy::init_offset_maps()
     for (i = 1; i < N; i++) {
         for (j = 1; j < N; j++) {
             for (k = j; k < N; k++) {
-                pos = IJK(i, j, k, N);
+                pos = IJK2num(i, j, k, N);
                 g4_offset_map[pos] = offset;
                 offset += g4_size;
             }
@@ -1204,17 +1229,15 @@ void PairTensorAlloy::read_graph_model(
 
     outputs.clear();
     status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
-    if (status.ok() && outputs[0].flat<string>().data()[0] == "high") {
-        use_fp64 = true;
-    } else {
-        use_fp64 = false;
-    }
+    use_fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
 
     outputs.clear();
     status = session->Run({}, {"Metadata/use_legacy_keys"}, {}, &outputs);
     if (status.ok() && outputs[0].flat<string>().data()[0] == "false") {
         use_legacy_keys = false;
         std::cout << "Use new VAP keys" << std::endl;
+    } else {
+        std::cout << "Use legacy VAP keys" << std::endl;
     }
 }
 

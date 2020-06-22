@@ -42,12 +42,13 @@ namespace LAMMPS_NS {
         double memory_usage() override;
 
     protected:
-        // Virtual-atom approach variables
+
         GraphModel graph_model;
         double cutforcesq, cutmax;
 
         int32 *g2_offset_map;
         int32 *g4_offset_map;
+        int32 **radial_interactions;
         VirtualAtomMap *vap;
 
         void init_offset_maps();
@@ -60,6 +61,11 @@ namespace LAMMPS_NS {
 
         void get_shift_vector(int i, double &nx, double &ny, double &nz);
         double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
+
+        /*
+         * Return the atom index in the local frame.
+         * vap->get_index_map()[local_idx] will map the local index to VAP index.
+         * */
         int inline get_local_idx(const unsigned int i) {
             return atom->tag[i] - 1;
         }
@@ -78,6 +84,8 @@ namespace LAMMPS_NS {
 
         Tensor *h_tensor;
         double h_inv[3][3];
+
+        int32 **g2_counters;
 
         Tensor *R_tensor;
         Tensor *volume_tensor;
