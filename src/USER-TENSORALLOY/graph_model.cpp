@@ -53,6 +53,7 @@ Status GraphModel::read(
 
     if (parse_status) {
         filename = graph_model_path;
+        cls = jsonData["class"].asString();
         rc = jsonData["rc"].asDouble();
         use_angular = jsonData["angular"].asBool();
         n_eta = jsonData["eta"].size();

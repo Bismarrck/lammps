@@ -37,6 +37,9 @@ namespace LAMMPS_NS {
             }
         }
 
+        bool use_universal_transformer() { return cls == "UniversalTransformer"; }
+        const string get_transformer_name() { return cls; }
+
         void compute_max_occurs(const int natoms, const int* atom_types);
         void print();
 
@@ -52,6 +55,7 @@ namespace LAMMPS_NS {
         int n_gamma;
         int n_zeta;
         string filename;
+        string cls;
 
     private:
         bool decoded;
