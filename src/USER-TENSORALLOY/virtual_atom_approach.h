@@ -22,22 +22,22 @@ namespace LAMMPS_NS {
         void build(const GraphModel&, int, const int *);
 
         const int32 *get_row_splits() const { return splits; }
-        const int32 *get_index_map() const { return index_map; }
-        const int32 *get_reverse_map() const { return reverse_map; }
-        const float *get_atom_mask() const { return mask; }
-        const int get_n_atoms_vap() const { return n_atoms_vap; }
+        const int32 *get_local_to_vap_map() const { return local_to_vap_map; }
+        const int32 *get_vap_to_local_map() const { return vap_to_local_map; }
+        const float *get_atom_masks() const { return atom_masks; }
+        int get_n_atoms_vap() const { return n_atoms_vap; }
 
-        const double memory_usage() const { return total_bytes; };
+        double memory_usage() const { return total_bytes; };
 
     protected:
         // Internal variables
         int32 n_atoms_vap;
         int32 *element_map;
         int32 *offsets;
-        int32 *index_map;
-        int32 *reverse_map;
+        int32 *local_to_vap_map;
+        int32 *vap_to_local_map;
         int32 *splits;
-        float *mask;
+        float *atom_masks;
 
         Memory *_memory;
 

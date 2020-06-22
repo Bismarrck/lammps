@@ -3,8 +3,6 @@
 //
 
 #include <string>
-#include <vector>
-#include <iostream>
 #include "virtual_atom_approach.h"
 
 using namespace LAMMPS_NS;
@@ -20,11 +18,11 @@ VirtualAtomMap::VirtualAtomMap(Memory *memory)
     n_atoms_vap = 0;
     _memory = memory;
 
-    mask = nullptr;
+    atom_masks = nullptr;
     element_map = nullptr;
     offsets = nullptr;
-    index_map = nullptr;
-    reverse_map = nullptr;
+    local_to_vap_map = nullptr;
+    vap_to_local_map = nullptr;
     splits = nullptr;
 
     total_bytes = 0.0;
@@ -41,10 +39,10 @@ void VirtualAtomMap::build(
 {
     assert(graph_model.is_initialized());
 
-    int i = 0;
-    int local_index = 0;
-    int atom_index = 0;
-    int gsl_index = 0;
+    int i;
+    int local_index;
+    int atom_index;
+    int gsl_index;
     int *delta = nullptr;
     int n_symbols_vap = graph_model.get_n_elements() + 1;
 
@@ -55,16 +53,16 @@ void VirtualAtomMap::build(
     }
 
     // mask = np.zeros(self.max_vap_n_atoms, dtype=bool)
-    _memory->create(mask, n_atoms_vap, "pair:vap:mask");
-    _memory->create(index_map, inum, "pair:vap:index_map");
-    _memory->create(reverse_map, n_atoms_vap, "pair:vap:reverse_map");
+    _memory->create(atom_masks, n_atoms_vap, "pair:vap:mask");
+    _memory->create(local_to_vap_map, inum, "pair:vap:index_map");
+    _memory->create(vap_to_local_map, n_atoms_vap, "pair:vap:reverse_map");
     _memory->create(offsets, n_symbols_vap, "pair:vap:offsets");
     _memory->create(splits, n_symbols_vap, "pair:vap:splits");
-    total_bytes = sizeof(int32) * (n_atoms_vap * 2 + inum + n_symbols_vap * 2);
+    total_bytes = static_cast<double>(sizeof(int32)) * (n_atoms_vap * 2 + inum + n_symbols_vap * 2);
 
     // Initialize `mask` to all zeros
     for (i = 0; i < n_atoms_vap; i++)
-        mask[i] = 0.0;
+        atom_masks[i] = 0.0;
 
     // Initialize `delta` to all zeros.
     _memory->create(delta, n_symbols_vap, "pair:vap:delta");
@@ -91,9 +89,9 @@ void VirtualAtomMap::build(
         // So we can use its values as indices directly.
         atom_index = itypes[i];
         gsl_index = offsets[atom_index - 1] + delta[atom_index];
-        index_map[local_index] = gsl_index;
+        local_to_vap_map[local_index] = gsl_index;
         delta[atom_index] += 1;
-        mask[gsl_index] = 1.0;
+        atom_masks[gsl_index] = 1.0;
     }
 
     // `delta` is no longer needed.
@@ -102,10 +100,10 @@ void VirtualAtomMap::build(
 
     // reverse_map = {v: k - 1 for k, v in index_map.items()}
     for (i = 0; i < n_atoms_vap; i++) {
-        reverse_map[i] = -1;
+        vap_to_local_map[i] = -1;
     }
     for (i = 0; i < inum; i++) {
-        reverse_map[index_map[i]] = i;
+        vap_to_local_map[local_to_vap_map[i]] = i;
     }
 }
 
@@ -121,15 +119,15 @@ VirtualAtomMap::~VirtualAtomMap()
     _memory->destroy(offsets);
     delete [] offsets;
 
-    _memory->destroy(index_map);
-    delete [] index_map;
+    _memory->destroy(local_to_vap_map);
+    delete [] local_to_vap_map;
 
     _memory->destroy(splits);
     delete [] splits;
 
-    _memory->destroy(reverse_map);
-    delete [] reverse_map;
+    _memory->destroy(vap_to_local_map);
+    delete [] vap_to_local_map;
 
-    _memory->destroy(mask);
-    delete [] mask;
+    _memory->destroy(atom_masks);
+    delete [] atom_masks;
 }
