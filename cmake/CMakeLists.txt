@@ -450,15 +450,16 @@ if(PKG_USER-TENSORALLOY)
   set(USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/pair_tensoralloy.cpp
                                ${USER-TENSORALLOY_SOURCES_DIR}/virtual_atom_approach.cpp
                                ${USER-TENSORALLOY_SOURCES_DIR}/graph_model.cpp
+                               ${USER-TENSORALLOY_SOURCES_DIR}/tensoralloy_utils.cpp
                                ${USER-TENSORALLOY_SOURCES_DIR}/jsoncpp/jsoncpp.cpp)
 
   include_directories(${USER-TENSORALLOY_SOURCES_DIR})
   RegisterStyles(${USER-TENSORALLOY_SOURCES_DIR})
   RegisterPackages(${USER-TENSORALLOY_SOURCES_DIR})
 
-  add_library(libtensoralloy STATIC ${USER-TENSORALLOY_SOURCES})
-  target_link_libraries(libtensoralloy TensorflowCC::Shared)
-  list(APPEND LAMMPS_LINK_LIBS libtensoralloy)
+  add_library(tensoralloy STATIC ${USER-TENSORALLOY_SOURCES})
+  target_link_libraries(tensoralloy TensorflowCC::TensorflowCC)
+  list(APPEND LAMMPS_LINK_LIBS tensoralloy)
 endif()
 
 if(PKG_USER-AWPMD)
