@@ -21,15 +21,15 @@ namespace LAMMPS_NS {
 
     public:
         GraphModel();
-        ~GraphModel() {};
+        ~GraphModel() = default;;
 
         Status read(const Tensor&, const string&, const std::vector<string>&);
-        const bool is_initialized() const { return decoded && max_occurs_initialized; }
-        const int get_n_elements() const { return n_elements; }
-        const bool angular() const { return use_angular; }
-        const double get_cutoff() { return rc; }
-        const unsigned int get_max_occur(int index) const { return max_occurs[index]; }
-        const int get_ndim(bool is_angular=false) const {
+        bool is_initialized() const { return decoded && max_occurs_initialized; }
+        int get_n_elements() const { return n_elements; }
+        bool angular() const { return use_angular; }
+        double get_cutoff() const { return rc; }
+        unsigned int get_max_occur(int index) const { return max_occurs[index]; }
+        int get_ndim(bool is_angular=false) const {
             if (is_angular) {
                 return n_gamma * n_beta * n_zeta;
             } else {
@@ -38,9 +38,9 @@ namespace LAMMPS_NS {
         }
 
         bool use_universal_transformer() { return cls == "UniversalTransformer"; }
-        const string get_transformer_name() { return cls; }
+        string get_transformer_name() const { return cls; }
 
-        void compute_max_occurs(const int natoms, const int* atom_types);
+        void compute_max_occurs(int natoms, const int* atom_types);
         void print();
 
     protected:

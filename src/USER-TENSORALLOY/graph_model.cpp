@@ -55,14 +55,18 @@ Status GraphModel::read(
     if (parse_status) {
         filename = graph_model_path;
         cls = jsonData["class"].asString();
-        rc = jsonData["rc"].asDouble();
-        use_angular = jsonData["angular"].asBool();
-        n_eta = jsonData["eta"].size();
-        n_omega = jsonData["omega"].size();
-        n_beta = jsonData["beta"].size();
-        n_gamma = jsonData["gamma"].size();
-        n_zeta = jsonData["zeta"].size();
 
+        if (cls == "UniversalTransformer") {
+            rc = jsonData["rcut"].asDouble();
+        } else {
+            rc = jsonData["rc"].asDouble();
+            n_eta = jsonData["eta"].size();
+            n_omega = jsonData["omega"].size();
+            n_beta = jsonData["beta"].size();
+            n_gamma = jsonData["gamma"].size();
+            n_zeta = jsonData["zeta"].size();
+        }
+        use_angular = jsonData["angular"].asBool();
         Json::Value graph_model_symbols = jsonData["elements"];
         n_elements = graph_model_symbols.size();
 
