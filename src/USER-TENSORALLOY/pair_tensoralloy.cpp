@@ -110,9 +110,6 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     // Disable `float64` by default.
     use_fp64 = true;
 
-    // Use legacy keys by default.
-    use_legacy_keys = false;
-
     // Set the variables to their default values
     dynamic_bytes = 0;
     nmax = -1;
