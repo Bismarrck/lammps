@@ -13,10 +13,10 @@ using namespace LAMMPS_NS;
    Initialization.
 ------------------------------------------------------------------------- */
 
-VirtualAtomMap::VirtualAtomMap(Memory *memory)
+VirtualAtomMap::VirtualAtomMap(Memory *pool)
 {
     n_atoms_vap = 0;
-    _memory = memory;
+    memory = pool;
 
     atom_masks = nullptr;
     element_map = nullptr;
@@ -43,7 +43,7 @@ void VirtualAtomMap::build(
     int local_index;
     int atom_index;
     int gsl_index;
-    int *delta = nullptr;
+    int *delta;
     int n_symbols_vap = graph_model.get_n_elements() + 1;
 
     // self.max_vap_n_atoms = sum(max_occurs.values()) + istart
@@ -53,11 +53,11 @@ void VirtualAtomMap::build(
     }
 
     // mask = np.zeros(self.max_vap_n_atoms, dtype=bool)
-    _memory->create(atom_masks, n_atoms_vap, "pair:vap:mask");
-    _memory->create(local_to_vap_map, inum, "pair:vap:index_map");
-    _memory->create(vap_to_local_map, n_atoms_vap, "pair:vap:reverse_map");
-    _memory->create(offsets, n_symbols_vap, "pair:vap:offsets");
-    _memory->create(splits, n_symbols_vap, "pair:vap:splits");
+    memory->create(atom_masks, n_atoms_vap, "pair:vap:mask");
+    memory->create(local_to_vap_map, inum, "pair:vap:local2vap");
+    memory->create(vap_to_local_map, n_atoms_vap, "pair:vap:vap2local");
+    memory->create(offsets, n_symbols_vap, "pair:vap:offsets");
+    memory->create(splits, n_symbols_vap, "pair:vap:splits");
     total_bytes = static_cast<double>(sizeof(int32)) * (n_atoms_vap * 2 + inum + n_symbols_vap * 2);
 
     // Initialize `mask` to all zeros
@@ -65,7 +65,7 @@ void VirtualAtomMap::build(
         atom_masks[i] = 0.0;
 
     // Initialize `delta` to all zeros.
-    _memory->create(delta, n_symbols_vap, "pair:vap:delta");
+    memory->create(delta, n_symbols_vap, "pair:vap:delta");
     for (i = 0; i < n_symbols_vap; i++) {
         delta[i] = 0;
     }
@@ -95,10 +95,9 @@ void VirtualAtomMap::build(
     }
 
     // `delta` is no longer needed.
-    _memory->destroy(delta);
-    delete [] delta;
+    memory->destroy(delta);
 
-    // reverse_map = {v: k - 1 for k, v in index_map.items()}
+    // vap_to_local_map = {v: k - 1 for k, v in index_map.items()}
     for (i = 0; i < n_atoms_vap; i++) {
         vap_to_local_map[i] = -1;
     }
@@ -113,21 +112,12 @@ void VirtualAtomMap::build(
 
 VirtualAtomMap::~VirtualAtomMap()
 {
-    _memory->destroy(element_map);
-    delete [] element_map;
-
-    _memory->destroy(offsets);
-    delete [] offsets;
-
-    _memory->destroy(local_to_vap_map);
-    delete [] local_to_vap_map;
-
-    _memory->destroy(splits);
-    delete [] splits;
-
-    _memory->destroy(vap_to_local_map);
-    delete [] vap_to_local_map;
-
-    _memory->destroy(atom_masks);
-    delete [] atom_masks;
+    // All arrays were allocated with `memory->create`, so `delete` should
+    // not be used here.
+    memory->destroy(element_map);
+    memory->destroy(offsets);
+    memory->destroy(local_to_vap_map);
+    memory->destroy(splits);
+    memory->destroy(vap_to_local_map);
+    memory->destroy(atom_masks);
 }

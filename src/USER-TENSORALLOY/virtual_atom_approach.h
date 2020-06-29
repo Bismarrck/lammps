@@ -39,7 +39,7 @@ namespace LAMMPS_NS {
         int32 *splits;
         float *atom_masks;
 
-        Memory *_memory;
+        Memory *memory;
 
     private:
         double total_bytes;
