@@ -83,6 +83,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     pulay_stress_tensor = nullptr;
     etemperature_tensor = nullptr;
     eentropy_tensor = nullptr;
+    nnl_max_tensor = nullptr;
     row_splits_tensor = nullptr;
 
     // Use parallel mode by default.
@@ -109,7 +110,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     use_fp64 = true;
 
     // Use legacy keys by default.
-    use_legacy_keys = true;
+    use_legacy_keys = false;
 
     // Set the variables to their default values
     dynamic_bytes = 0;
@@ -128,11 +129,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 PairTensorAlloy::~PairTensorAlloy()
 {
     memory->destroy(g2_offset_map);
-    delete [] g2_offset_map;
 
     if (graph_model.angular()) {
         memory->destroy(g4_offset_map);
-        delete [] g4_offset_map;
     }
 
     if (allocated) {
@@ -1023,17 +1022,17 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
     memory->create(setflag, lmp_N, lmp_N, "pair:setflag");
     for (i = 1; i < lmp_N; i++) {
-        for (j = i; j <= lmp_N; j++) {
+        for (j = i; j < lmp_N; j++) {
             setflag[i][j] = 0;
         }
     }
 
     // Radial interactions
-    memory->create(radial_interactions, lmp_N, lmp_N, "pair:radial_interactions");
+    memory->create(radial_interactions, lmp_N, lmp_N, "pair:rip");
     for (i = 1; i < lmp_N; i++) {
         radial_interactions[i][i] = 0;
         int val = 1;
-        for (j = 1; j <= lmp_N; j++) {
+        for (j = 1; j < lmp_N; j++) {
             if (j != i) {
                 radial_interactions[i][j] = val;
                 val ++;
@@ -1042,7 +1041,7 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     }
 
     // Radial counters
-    memory->create(g2_counters, vap->get_n_atoms_vap(), lmp_N, "pair:g2_counters");
+    memory->create(g2_counters, vap->get_n_atoms_vap(), lmp_N, "pair:g2c");
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
         for (j = 0; j < lmp_N; j++) {
             g2_counters[i][j] = 0;
@@ -1058,7 +1057,7 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     R_tensor->tensor<T, 2>().setConstant(0.f);
 
     // Volume
-    volume_tensor = new Tensor(dtype, TensorShape({}));
+    volume_tensor = new Tensor(dtype, TensorShape());
 
     // row splits tensor
     row_splits_tensor = new Tensor(DT_INT32, TensorShape({model_N}));
@@ -1230,15 +1229,14 @@ void PairTensorAlloy::read_graph_model(
     outputs.clear();
     status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
     use_fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
-
-    outputs.clear();
-    status = session->Run({}, {"Metadata/use_legacy_keys"}, {}, &outputs);
-    if (status.ok() && outputs[0].flat<string>().data()[0] == "false") {
-        use_legacy_keys = false;
-        std::cout << "Use new VAP keys" << std::endl;
+    if (use_fp64) {
+        std::cout << "Graph model uses float64" << std::endl;
     } else {
-        std::cout << "Use legacy VAP keys" << std::endl;
+        std::cout << "Graph model uses float32" << std::endl;
     }
+
+    use_legacy_keys = false;
+    std::cout << "Use new VAP keys" << std::endl;
 }
 
 /* ----------------------------------------------------------------------
