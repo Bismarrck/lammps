@@ -27,14 +27,9 @@ GraphModel::GraphModel()
     max_occurs_initialized = false;
     decoded = false;
     filename = "";
-    rc = 0.0;
+    rcut = 0.0;
+    acut = 0.0;
     use_angular = false;
-    n_beta = 0;
-    n_omega = 0;
-    n_beta = 0;
-    n_gamma = 0;
-    n_zeta = 0;
-    n_eta = 0;
     n_elements = 0;
 }
 
@@ -55,17 +50,8 @@ Status GraphModel::read(
     if (parse_status) {
         filename = graph_model_path;
         cls = jsonData["class"].asString();
-
-        if (cls == "UniversalTransformer") {
-            rc = jsonData["rcut"].asDouble();
-        } else {
-            rc = jsonData["rc"].asDouble();
-            n_eta = jsonData["eta"].size();
-            n_omega = jsonData["omega"].size();
-            n_beta = jsonData["beta"].size();
-            n_gamma = jsonData["gamma"].size();
-            n_zeta = jsonData["zeta"].size();
-        }
+        rcut = jsonData["rcut"].asDouble();
+        acut = jsonData["acut"].asDouble();
         use_angular = jsonData["angular"].asBool();
         Json::Value graph_model_symbols = jsonData["elements"];
         n_elements = graph_model_symbols.size();
@@ -115,13 +101,9 @@ void GraphModel::compute_max_occurs(const int natoms, const int* atom_types)
 void GraphModel::print()
 {
     std::cout << "Graph model <" << filename << "> Metadata" << std::endl;
-    std::cout << "  * rc: " << std::setprecision(3) << rc << std::endl;
+    std::cout << "  * rcut: " << std::setprecision(3) << rcut << std::endl;
+    std::cout << "  * acut: " << std::setprecision(3) << acut << std::endl;
     std::cout << "  * angular: " << use_angular << std::endl;
-    std::cout << "  * n_eta: " << n_eta << std::endl;
-    std::cout << "  * n_omega: " << n_omega << std::endl;
-    std::cout << "  * n_beta: " << n_beta << std::endl;
-    std::cout << "  * n_gamma: " << n_gamma << std::endl;
-    std::cout << "  * n_zeta: " << n_zeta << std::endl;
     std::cout << "  * max_occurs: " << std::endl;
     if (max_occurs_initialized) {
         for (int i = 0; i < n_elements; i++)
