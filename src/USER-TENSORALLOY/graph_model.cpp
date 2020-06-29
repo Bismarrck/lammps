@@ -34,6 +34,7 @@ GraphModel::GraphModel()
     n_beta = 0;
     n_gamma = 0;
     n_zeta = 0;
+    n_eta = 0;
     n_elements = 0;
 }
 
