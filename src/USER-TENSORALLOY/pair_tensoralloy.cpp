@@ -53,6 +53,7 @@ typedef std::chrono::high_resolution_clock Clock;
 #define MAXLINE 1024
 #define IJ2num(i,j,n) i * n + j
 #define IJK2num(i,j,k,n) i * n * n + j * n + k
+#define eV_to_Kelvin 11604.51812
 
 
 /* ---------------------------------------------------------------------- */
@@ -870,24 +871,12 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
             }
         }
         feed_dict.emplace_back("Placeholders/g4.v2g_map", *g4_v2gmap_tensor);
-        if (use_legacy_keys) {
-            feed_dict.emplace_back("Placeholders/g4.ij.ilist", *g4_ilist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.ij.jlist", *g4_jlist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.ik.ilist", *g4_ilist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.ik.klist", *g4_klist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.jk.jlist", *g4_jlist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.jk.klist", *g4_klist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ij_shift_tensor);
-            feed_dict.emplace_back("Placeholders/g4.shift.ik", *g4_ik_shift_tensor);
-            feed_dict.emplace_back("Placeholders/g4.shift.jk", *g4_jk_shift_tensor);
-        } else {
-            feed_dict.emplace_back("Placeholders/g4.ilist", *g4_ilist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.jlist", *g4_jlist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.klist", *g4_klist_tensor);
-            feed_dict.emplace_back("Placeholders/g4.n1", *g4_ij_shift_tensor);
-            feed_dict.emplace_back("Placeholders/g4.n2", *g4_ik_shift_tensor);
-            feed_dict.emplace_back("Placeholders/g4.n3", *g4_jk_shift_tensor);
-        }
+        feed_dict.emplace_back("Placeholders/g4.ilist", *g4_ilist_tensor);
+        feed_dict.emplace_back("Placeholders/g4.jlist", *g4_jlist_tensor);
+        feed_dict.emplace_back("Placeholders/g4.klist", *g4_klist_tensor);
+        feed_dict.emplace_back("Placeholders/g4.n1", *g4_ij_shift_tensor);
+        feed_dict.emplace_back("Placeholders/g4.n2", *g4_ik_shift_tensor);
+        feed_dict.emplace_back("Placeholders/g4.n3", *g4_jk_shift_tensor);
     }
 
     auto t_g4 = Clock::now();
@@ -985,7 +974,7 @@ void PairTensorAlloy::compute(int eflag, int vflag)
         if (use_fp64) {
             run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
         } else {
-            run_once_universal<float>(eflag, vflag, DataType::DT_DOUBLE);
+            run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
         }
     } else {
         if (use_fp64) {
@@ -1248,19 +1237,29 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     // Read atom types from the lammps input file.
     std::vector<string> symbols;
     symbols.emplace_back("X");
-    for (int i = 1; i < narg; i++) {
-        auto option = string(arg[i]);
-        if (option.c_str()[0] == '-') {
-            if (option == "--serial") {
+    int idx = 1;
+    while (idx < narg) {
+        auto iarg = string(arg[idx]);
+        if (iarg == "serial") {
+            auto val = string(arg[idx + 1]);
+            if (val == "off") {
+                serial_mode = false;
+            } else if (val == "on") {
                 serial_mode = true;
-                std::cout << "Warning: serial mode is used." << std::endl;
+                std::cout << "Serial mode is enabled." << std::endl;
             } else {
-                auto message = "Unrecognized option: " + option;
-                error->all(FLERR, message.c_str());
+                error->all(FLERR, "'on/off' are available values for key 'serial'.");
             }
+            idx ++;
+        } else if (iarg == "etemp") {
+            double kelvin = std::atof(string(arg[idx + 1]).c_str());
+            etemp = kelvin / eV_to_Kelvin;
+            std::cout << "Electron temperature is " << etemp << " (eV)" << std::endl;
+            idx ++;
         } else {
-            symbols.emplace_back(string(arg[i]));
+            symbols.emplace_back(iarg);
         }
+        idx ++;
     }
 
     // Load the graph model

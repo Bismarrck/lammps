@@ -82,6 +82,9 @@ namespace LAMMPS_NS {
         bool use_fp64;
         bool use_legacy_keys;
 
+        // Electron temperature (eV)
+        double etemp;
+
         Tensor *h_tensor;
         double h_inv[3][3];
 
