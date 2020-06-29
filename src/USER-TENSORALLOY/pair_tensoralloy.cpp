@@ -694,6 +694,13 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         R_tensor_mapped(igsl, 2) = R[ilocal][2];
     }
 
+    // Reset the counters
+    for (i = 0; i < vap->get_n_atoms_vap(); i++) {
+        for (j = 0; j < atom->ntypes + 1; j++) {
+            g2_counters[i][j] = 0;
+        }
+    }
+
     auto g2_shift_tensor = new Tensor(dtype, TensorShape({nij_max, 3}));
     auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<T, 2>();
     g2_shift_tensor_mapped.setConstant(0);
@@ -962,8 +969,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         auto ms_4 = std::chrono::duration_cast<std::chrono::milliseconds>(t_efv - t_run).count();
         auto ms_5 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_efv).count();
         auto ms_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_start).count();
-        printf("nij_max %5d nijk_max %5d ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n",
-               nij_max, nijk_max, ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
+        printf("nij_max=%5d nijk_max=%5d nnl_max=%5d ms %5lld g2 %5lld g4 %5lld run %5lld efv %5lld mem %5lld\n",
+               nij_max, nijk_max, nnl_max, ms_6, ms_1, ms_2, ms_3, ms_4, ms_5);
     }
 }
 
