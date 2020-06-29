@@ -627,7 +627,8 @@ template <typename T>
 void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 {
     unsigned int i, j, k;
-    int ii, jj, kk, inum, jnum, itype, jtype, ktype, ilocal, igsl;
+    int ii, jj, kk, inum, jnum, itype, jtype, ktype;
+    int i_local, i_vap;
     int ijtype;
     int nij_max = 0;
     int nij = 0;
@@ -685,13 +686,13 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     nij_max = (inum - 1) * inum / 2;
 
     for (ii = 0; ii < inum; ii++) {
-        ilocal = ilist[ii];
-        igsl = local_to_vap_map[ilocal];
-        jnum = numneigh[ilocal];
+        i_local = ilist[ii];
+        i_vap = local_to_vap_map[i_local];
+        jnum = numneigh[i_local];
         nij_max += jnum;
-        R_tensor_mapped(igsl, 0) = R[ilocal][0];
-        R_tensor_mapped(igsl, 1) = R[ilocal][1];
-        R_tensor_mapped(igsl, 2) = R[ilocal][2];
+        R_tensor_mapped(i_vap, 0) = R[i_local][0];
+        R_tensor_mapped(i_vap, 1) = R[i_local][1];
+        R_tensor_mapped(i_vap, 2) = R[i_local][2];
     }
 
     // Reset the counters
@@ -904,14 +905,14 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         eng_vdwl = outputs[0].scalar<T>().data()[0];
     }
 
-    auto nn_gsl_forces = outputs[1].matrix<T>();
-    const int32 *reverse_map = vap->get_vap_to_local_map();
-    for (igsl = 1; igsl < vap->get_n_atoms_vap(); igsl++) {
-        ilocal = reverse_map[igsl];
-        if (ilocal >= 0) {
-            atom->f[ilocal][0] = static_cast<double> (nn_gsl_forces(igsl - 1, 0));
-            atom->f[ilocal][1] = static_cast<double> (nn_gsl_forces(igsl - 1, 1));
-            atom->f[ilocal][2] = static_cast<double> (nn_gsl_forces(igsl - 1, 2));
+    auto F_vap = outputs[1].matrix<T>();
+    const int32 *vap_to_local = vap->get_vap_to_local_map();
+    for (i_vap = 1; i_vap < vap->get_n_atoms_vap(); i_vap++) {
+        i_local = vap_to_local[i_vap];
+        if (i_local >= 0) {
+            atom->f[i_local][0] = static_cast<double> (F_vap(i_vap - 1, 0));
+            atom->f[i_local][1] = static_cast<double> (F_vap(i_vap - 1, 1));
+            atom->f[i_local][2] = static_cast<double> (F_vap(i_vap - 1, 2));
         }
     }
 
