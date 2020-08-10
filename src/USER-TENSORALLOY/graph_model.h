@@ -25,7 +25,6 @@ namespace LAMMPS_NS {
                 bool serial_mode);
         ~GraphModel();
 
-        Status read(const Tensor&, const string&, const std::vector<string>&);
         bool is_initialized() const { return decoded && max_occurs_initialized; }
         int get_n_elements() const { return n_elements; }
         bool angular() const { return use_angular; }
@@ -46,8 +45,12 @@ namespace LAMMPS_NS {
         int n_elements;
         std::vector<string> symbols;
         string filename;
+        std::map<string, string> ops;
 
         Status load_graph(const string& filename, bool serial_mode);
+        Status read_transformer_params(const Tensor&, const string&, const std::vector<string>&);
+        Status read_ops(const Tensor&);
+
         bool fp64;
 
         bool decoded;

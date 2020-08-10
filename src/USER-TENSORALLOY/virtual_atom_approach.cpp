@@ -37,7 +37,7 @@ void VirtualAtomMap::build(
         const int inum,
         const int *itypes)
 {
-    assert(graph_model.is_initialized());
+    assert(graph_model->is_initialized());
 
     int i;
     int local_index;

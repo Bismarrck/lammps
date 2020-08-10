@@ -47,8 +47,7 @@ GraphModel::GraphModel(
         auto message = "Decode graph model error: " + status.ToString();
         error->all(FLERR, message.c_str());
     }
-
-    status = read(outputs[0], graph_model_path, symbols);
+    status = read_transformer_params(outputs[0], graph_model_path, symbols);
     if (!status.ok()) {
         error->all(FLERR, status.error_message().c_str());
     }
@@ -61,6 +60,19 @@ GraphModel::GraphModel(
     } else {
         std::cout << "Graph model uses float32" << std::endl;
     }
+
+    outputs.clear();
+    status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "Decode graph model error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    status = read_ops(outputs[0]);
+    if (!status.ok()) {
+        error->all(FLERR, status.error_message().c_str());
+    }
+
+    decoded = true;
 }
 
 /* ----------------------------------------------------------------------
@@ -107,10 +119,10 @@ Status GraphModel::load_graph(const string &graph_file_name, bool serial_mode) {
 
 
 /* ----------------------------------------------------------------------
-   Read the metadata of the graph model.
+   Read parameters for initializing a `UniversalTransformer`.
 ------------------------------------------------------------------------- */
 
-Status GraphModel::read(
+Status GraphModel::read_transformer_params(
         const Tensor& metadata,
         const string& graph_model_path,
         const std::vector<string>& lammps_symbols)
@@ -138,11 +150,43 @@ Status GraphModel::read(
             }
         }
     } else {
-        auto message = "Could not decode the graph model.";
+        auto message = "Could not decode transformer parameters";
         return Status(tensorflow::error::Code::INTERNAL, message);
     }
-    decoded = true;
     return Status::OK();
+}
+
+/* ----------------------------------------------------------------------
+   Read Ops
+------------------------------------------------------------------------- */
+
+Status GraphModel::read_ops(const Tensor& metadata)
+{
+    Json::Value jsonData;
+    Json::Reader jsonReader;
+    auto stream = metadata.flat<string>().data()[0];
+    auto parse_status = jsonReader.parse(stream, jsonData, false);
+
+    if (parse_status) {
+        for( Json::Value::iterator itr = jsonData.begin() ; itr != jsonData.end() ; itr++ ) {
+            ops.insert({itr.key().asString(), itr->asString()});
+        }
+    } else {
+        auto message = "Could not decode ops";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    }
+    if (ops.find("energy") == ops.end()) {
+        auto message = "The total energy Op is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else if (ops.find("forces") == ops.end()) {
+        auto message = "The atomic force Op is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else if (ops.find("stress") == ops.end()) {
+        auto message = "The virial stress Op is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else {
+        return Status::OK();
+    }
 }
 
 /* ----------------------------------------------------------------------
