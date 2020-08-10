@@ -37,6 +37,8 @@ namespace LAMMPS_NS {
         void compute_max_occurs(int natoms, const int* atom_types);
         void print();
 
+        Status run(const std::vector<std::pair<string, Tensor>> &, std::vector<Tensor> &);
+
     protected:
         std::vector<unsigned int> max_occurs;
         bool use_angular;

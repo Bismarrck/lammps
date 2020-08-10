@@ -33,7 +33,6 @@
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/public/session.h"
 
 #include "pair_tensoralloy.h"
 #include "tensoralloy_utils.h"
@@ -509,11 +508,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     auto t_g4 = Clock::now();
 
     std::vector<Tensor> outputs;
-    std::vector<string> run_ops({
-        "Output/Energy/free_energy:0",
-        "Output/Forces/forces:0",
-        "Output/Stress/Full/stress:0"});
-    Status status = graph_model->session->Run(feed_dict, run_ops, {}, &outputs);
+    Status status = graph_model->run(feed_dict, outputs);
+
     if (!status.ok()) {
         auto message = "TensorAlloy internal error: " + status.ToString();
         error->all(FLERR, message.c_str());
@@ -536,12 +532,12 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     }
 
     // Lammps uses a special Voigt order: xx yy zz xy xz yz
-    virial[0] = static_cast<double> (-outputs[2].matrix<T>()(0, 0));
-    virial[1] = static_cast<double> (-outputs[2].matrix<T>()(1, 1));
-    virial[2] = static_cast<double> (-outputs[2].matrix<T>()(2, 2));
-    virial[3] = static_cast<double> (-outputs[2].matrix<T>()(1, 0));
-    virial[4] = static_cast<double> (-outputs[2].matrix<T>()(2, 0));
-    virial[5] = static_cast<double> (-outputs[2].matrix<T>()(2, 1));
+    virial[0] = static_cast<double> (-outputs[2].flat<T>()(0));
+    virial[1] = static_cast<double> (-outputs[2].flat<T>()(1));
+    virial[2] = static_cast<double> (-outputs[2].flat<T>()(2));
+    virial[3] = static_cast<double> (-outputs[2].flat<T>()(5));
+    virial[4] = static_cast<double> (-outputs[2].flat<T>()(4));
+    virial[5] = static_cast<double> (-outputs[2].flat<T>()(3));
 
     vflag_fdotr = 0;
 

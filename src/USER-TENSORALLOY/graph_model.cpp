@@ -85,6 +85,18 @@ GraphModel::~GraphModel()
 }
 
 /* ----------------------------------------------------------------------
+   Run
+------------------------------------------------------------------------- */
+
+Status GraphModel::run(
+        const std::vector<std::pair<string, Tensor>> &feed_dict,
+        std::vector<Tensor> &outputs)
+{
+    std::vector<string> run_ops({ops["free_energy"], ops["forces"], ops["stress"]});
+    return session->Run(feed_dict, run_ops, {}, &outputs);
+}
+
+/* ----------------------------------------------------------------------
    Load the graph model
 ------------------------------------------------------------------------- */
 
