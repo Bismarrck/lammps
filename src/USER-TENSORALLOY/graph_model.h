@@ -9,6 +9,7 @@
 
 #include "tensorflow/core/platform/default/integral_types.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/public/session.h"
 
 namespace LAMMPS_NS {
 
@@ -20,17 +21,19 @@ namespace LAMMPS_NS {
     class GraphModel {
 
     public:
-        GraphModel();
-        ~GraphModel() = default;;
+        GraphModel(const string& graph_model_path, const std::vector<string>& symbols, Error *error,
+                bool serial_mode);
+        ~GraphModel();
 
         Status read(const Tensor&, const string&, const std::vector<string>&);
         bool is_initialized() const { return decoded && max_occurs_initialized; }
         int get_n_elements() const { return n_elements; }
         bool angular() const { return use_angular; }
+        bool use_fp64() const { return fp64; }
         double get_cutoff(bool angular=false) const { return angular ? acut : rcut; }
         unsigned int get_max_occur(int index) const { return max_occurs[index]; }
 
-        bool use_universal_transformer() { return cls == "UniversalTransformer"; }
+        std::unique_ptr<tensorflow::Session> session;
 
         void compute_max_occurs(int natoms, const int* atom_types);
         void print();
@@ -43,12 +46,12 @@ namespace LAMMPS_NS {
         int n_elements;
         std::vector<string> symbols;
         string filename;
-        string cls;
 
-    private:
+        Status load_graph(const string& filename, bool serial_mode);
+        bool fp64;
+
         bool decoded;
         bool max_occurs_initialized;
-
     };
 }
 

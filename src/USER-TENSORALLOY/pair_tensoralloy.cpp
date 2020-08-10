@@ -72,18 +72,16 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     radial_interactions = nullptr;
     radial_counters = nullptr;
     vap = nullptr;
-    session = nullptr;
+    graph_model = nullptr;
 
     // Tensor pointers
     R_tensor = nullptr;
     h_tensor = nullptr;
     volume_tensor = nullptr;
     n_atoms_vap_tensor = nullptr;
-    composition_tensor = nullptr;
     atom_mask_tensor = nullptr;
     pulay_stress_tensor = nullptr;
     etemperature_tensor = nullptr;
-    eentropy_tensor = nullptr;
     nnl_max_tensor = nullptr;
     row_splits_tensor = nullptr;
 
@@ -106,9 +104,6 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     // Per-atom virial is not supported.
     vflag_atom = 0;
-
-    // Disable `float64` by default.
-    use_fp64 = true;
 
     // Set the variables to their default values
     dynamic_bytes = 0;
@@ -153,12 +148,6 @@ PairTensorAlloy::~PairTensorAlloy()
         delete etemperature_tensor;
         etemperature_tensor = nullptr;
 
-        delete eentropy_tensor;
-        eentropy_tensor = nullptr;
-
-        delete composition_tensor;
-        composition_tensor = nullptr;
-
         delete atom_mask_tensor;
         atom_mask_tensor = nullptr;
 
@@ -166,8 +155,15 @@ PairTensorAlloy::~PairTensorAlloy()
         row_splits_tensor = nullptr;
     }
 
-    delete vap;
-    vap = nullptr;
+    if (vap) {
+        delete vap;
+        vap = nullptr;
+    }
+
+    if (graph_model) {
+        delete graph_model;
+        graph_model = nullptr;
+    }
 }
 
 /* ----------------------------------------------------------------------
@@ -272,7 +268,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     int *ilist, *jlist, *numneigh, **firstneigh;
     const int32 *local_to_vap_map;
     bool **shortneigh;
-    int model_N = graph_model.get_n_elements() + 1;
+    int model_N = graph_model->get_n_elements() + 1;
     bool use_timer = false;
 
     const char * use_timer_flag = getenv("USE_TENSORALLOY_TIMER");
@@ -402,8 +398,6 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         {"Placeholders/volume", *volume_tensor},
         {"Placeholders/pulay_stress", *pulay_stress_tensor},
         {"Placeholders/etemperature", *etemperature_tensor},
-        {"Placeholders/eentropy", *eentropy_tensor},
-        {"Placeholders/compositions", *composition_tensor},
         {"Placeholders/row_splits", *row_splits_tensor},
         {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
         {"Placeholders/g2.ilist", *g2_ilist_tensor},
@@ -421,7 +415,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     Tensor *g4_ik_shift_tensor = nullptr;
     Tensor *g4_jk_shift_tensor = nullptr;
 
-    if (graph_model.angular()) {
+    if (graph_model->angular()) {
         g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
         g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
@@ -516,10 +510,10 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
     std::vector<Tensor> outputs;
     std::vector<string> run_ops({
-        "Output/Energy/energy:0",
+        "Output/Energy/free_energy:0",
         "Output/Forces/forces:0",
         "Output/Stress/Full/stress:0"});
-    Status status = session->Run(feed_dict, run_ops, {}, &outputs);
+    Status status = graph_model->session->Run(feed_dict, run_ops, {}, &outputs);
     if (!status.ok()) {
         auto message = "TensorAlloy internal error: " + status.ToString();
         error->all(FLERR, message.c_str());
@@ -566,7 +560,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         delete [] shortneigh[i];
     delete [] shortneigh;
 
-    if (graph_model.angular()) {
+    if (graph_model->angular()) {
 
         dynamic_bytes += g4_v2gmap_tensor->TotalBytes();
         dynamic_bytes += g4_ilist_tensor->TotalBytes();
@@ -603,7 +597,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-    if (use_fp64) {
+    if (graph_model->use_fp64()) {
         run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
     } else {
         run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
@@ -627,7 +621,7 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     // N: the number of atom types plus one because `atom->type[i] >= 1`.
     // model: the atom types read from the graph model.
     // lmp: the atom types read from LAMMPS input (data) file.
-    int model_ntypes = graph_model.get_n_elements();
+    int model_ntypes = graph_model->get_n_elements();
     int model_N = model_ntypes + 1;
     int lmp_ntypes = atom->ntypes;
     int lmp_N = lmp_ntypes + 1;
@@ -701,22 +695,11 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     // electron temperature tensor
     etemperature_tensor = new Tensor(dtype, TensorShape());
     etemperature_tensor->flat<T>()(0) = 0.0f;
-
-    // electron entropy energy tensor
-    eentropy_tensor = new Tensor(dtype, TensorShape());
-    eentropy_tensor->flat<T>()(0) = 0.0f;
-
-    // Composition tensor
-    composition_tensor = new Tensor(dtype, TensorShape({model_ntypes}));
-    composition_tensor->flat<T>().setConstant(0.0);
-    for (i = 0; i < atom->nlocal; i++) {
-        composition_tensor->flat<T>()(atom->type[i] - 1) += 1.0f;
-    }
 }
 
 void PairTensorAlloy::allocate()
 {
-    if (use_fp64) {
+    if (graph_model->use_fp64()) {
         allocate_with_dtype<double>(DataType::DT_DOUBLE);
     } else {
         allocate_with_dtype<float>(DataType::DT_FLOAT);
@@ -730,75 +713,6 @@ void PairTensorAlloy::allocate()
 void PairTensorAlloy::settings(int narg, char **/*arg*/)
 {
     if (narg > 0) error->all(FLERR, "Illegal pair_style command");
-}
-
-/* ----------------------------------------------------------------------
-   Load the graph model
-------------------------------------------------------------------------- */
-
-// Reads a model graph definition from disk, and creates a session object you
-// can use to run it.
-Status PairTensorAlloy::load_graph(const string &graph_file_name) {
-    tensorflow::GraphDef graph_def;
-    Status load_graph_status =
-            ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
-    if (!load_graph_status.ok()) {
-        return tensorflow::errors::NotFound("Failed to load compute graph at '",
-                                            graph_file_name, "'");
-    }
-
-    // Initialize the session
-    tensorflow::SessionOptions options;
-    options.config.set_allow_soft_placement(true);
-    options.config.set_log_device_placement(false);
-
-    if (serial_mode) {
-        options.config.set_inter_op_parallelism_threads(1);
-        options.config.set_intra_op_parallelism_threads(1);
-    }
-
-    session.reset(tensorflow::NewSession(options));
-    Status session_create_status = session->Create(graph_def);
-    if (!session_create_status.ok()) {
-        return session_create_status;
-    }
-    return Status::OK();
-}
-
-/* ----------------------------------------------------------------------
-   Read the graph model.
-------------------------------------------------------------------------- */
-
-void PairTensorAlloy::read_graph_model(
-        const string& graph_model_path,
-        const std::vector<string>& symbols)
-{
-    Status load_graph_status = load_graph(graph_model_path);
-    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
-
-    std::vector<Tensor> outputs;
-    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
-    if (!status.ok()) {
-        auto message = "Decode graph model error: " + status.ToString();
-        error->all(FLERR, message.c_str());
-    }
-
-    status = graph_model.read(outputs[0], graph_model_path, symbols);
-    if (!status.ok()) {
-        error->all(FLERR, status.error_message().c_str());
-    }
-    if (!graph_model.use_universal_transformer()) {
-        error->all(FLERR, "Only UniversalTransformer is supported!");
-    }
-
-    outputs.clear();
-    status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
-    use_fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
-    if (use_fp64) {
-        std::cout << "Graph model uses float64" << std::endl;
-    } else {
-        std::cout << "Graph model uses float32" << std::endl;
-    }
 }
 
 /* ----------------------------------------------------------------------
@@ -836,8 +750,8 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     }
 
     // Load the graph model
-    read_graph_model(string(arg[0]), symbols);
-    graph_model.compute_max_occurs(atom->natoms, atom->type);
+    graph_model = new GraphModel(string(arg[0]), symbols, error, serial_mode);
+    graph_model->compute_max_occurs(atom->natoms, atom->type);
 
     // Initialize the Virtual-Atom Map
     vap = new VirtualAtomMap(memory);
@@ -862,7 +776,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     }
 
     // Set `cutmax`.
-    cutmax = graph_model.get_cutoff();
+    cutmax = graph_model->get_cutoff();
 }
 
 
@@ -902,10 +816,8 @@ double PairTensorAlloy::tensors_memory_usage()
     bytes += atom_mask_tensor->TotalBytes();
     bytes += nnl_max_tensor->TotalBytes();
     bytes += pulay_stress_tensor->TotalBytes();
-    bytes += eentropy_tensor->TotalBytes();
     bytes += etemperature_tensor->TotalBytes();
     bytes += atom_mask_tensor->TotalBytes();
-    bytes += composition_tensor->TotalBytes();
     bytes += dynamic_bytes;
     return bytes;
 }

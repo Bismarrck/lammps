@@ -6,6 +6,8 @@
 #include <iostream>
 #include <iomanip>
 
+#include "error.h"
+
 #include "jsoncpp/json/json.h"
 #include "graph_model.h"
 
@@ -22,16 +24,87 @@ using tensorflow::int32;
    Initialization.
 ------------------------------------------------------------------------- */
 
-GraphModel::GraphModel()
+GraphModel::GraphModel(
+        const string &graph_model_path,
+        const std::vector<string>& symbols,
+        Error *error,
+        bool serial_mode)
 {
     max_occurs_initialized = false;
     decoded = false;
-    filename = "";
+    filename = graph_model_path;
     rcut = 0.0;
     acut = 0.0;
     use_angular = false;
     n_elements = 0;
+
+    Status load_graph_status = load_graph(graph_model_path, serial_mode);
+    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+
+    std::vector<Tensor> outputs;
+    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "Decode graph model error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+
+    status = read(outputs[0], graph_model_path, symbols);
+    if (!status.ok()) {
+        error->all(FLERR, status.error_message().c_str());
+    }
+
+    outputs.clear();
+    status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
+    fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
+    if (fp64) {
+        std::cout << "Graph model uses float64" << std::endl;
+    } else {
+        std::cout << "Graph model uses float32" << std::endl;
+    }
 }
+
+/* ----------------------------------------------------------------------
+   Deallocation
+------------------------------------------------------------------------- */
+
+GraphModel::~GraphModel()
+{
+    session.reset();
+}
+
+/* ----------------------------------------------------------------------
+   Load the graph model
+------------------------------------------------------------------------- */
+
+// Reads a model graph definition from disk, and creates a session object you
+// can use to run it.
+Status GraphModel::load_graph(const string &graph_file_name, bool serial_mode) {
+    tensorflow::GraphDef graph_def;
+    Status load_graph_status =
+            ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
+    if (!load_graph_status.ok()) {
+        return tensorflow::errors::NotFound("Failed to load compute graph at '",
+                                            graph_file_name, "'");
+    }
+
+    // Initialize the session
+    tensorflow::SessionOptions options;
+    options.config.set_allow_soft_placement(true);
+    options.config.set_log_device_placement(false);
+
+    if (serial_mode) {
+        options.config.set_inter_op_parallelism_threads(1);
+        options.config.set_intra_op_parallelism_threads(1);
+    }
+
+    session.reset(tensorflow::NewSession(options));
+    Status session_create_status = session->Create(graph_def);
+    if (!session_create_status.ok()) {
+        return session_create_status;
+    }
+    return Status::OK();
+}
+
 
 /* ----------------------------------------------------------------------
    Read the metadata of the graph model.
@@ -49,7 +122,6 @@ Status GraphModel::read(
 
     if (parse_status) {
         filename = graph_model_path;
-        cls = jsonData["class"].asString();
         rcut = jsonData["rcut"].asDouble();
         acut = jsonData["acut"].asDouble();
         use_angular = jsonData["angular"].asBool();
