@@ -96,14 +96,14 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     one_coeff = 1;
     manybody_flag = 1;
 
-    // Virial is handled by TensorAlloy.
-    vflag_fdotr = 0;
-
     // Temporarily disable atomic energy.
     eflag_atom = 0;
 
-    // Per-atom virial is not supported.
-    vflag_atom = 0;
+    // Virial flags: global virial and per-atom virials are all supported.
+    vflag_fdotr = 1;
+    vflag_atom = 1;
+    vflag_either = 1;
+    vflag_global = 1;
 
     // Set the variables to their default values
     dynamic_bytes = 0;
@@ -266,16 +266,13 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     int i0, j0, k0;
     double jnx, jny, jnz;
     double knx, kny, knz;
+    double fx, fy, fz;
     int *ilist, *jlist, *numneigh, **firstneigh;
+    int *ivec, *jvec;
     const int32 *local_to_vap_map;
     bool **shortneigh;
     int model_N = graph_model->get_n_elements() + 1;
     bool use_timer = false;
-
-    const char * use_timer_flag = getenv("USE_TENSORALLOY_TIMER");
-    if (use_timer_flag && strcmp(use_timer_flag, "true") == 0) {
-        use_timer  = true;
-    }
 
     ev_init(eflag, vflag);
 
@@ -285,16 +282,12 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         nmax = atom->nmax;
     }
 
-    double **R = atom->x;
-
     inum = list->inum;
     ilist = list->ilist;
     numneigh = list->numneigh;
     firstneigh = list->firstneigh;
     local_to_vap_map = vap->get_local_to_vap_map();
     shortneigh = new bool* [inum];
-
-    auto t_start = Clock::now();
 
     // Cell
     volume = update_cell<T>();
@@ -313,10 +306,18 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         i_vap = local_to_vap_map[i_local];
         jnum = numneigh[i_local];
         nij_max += jnum;
-        R_tensor_mapped(i_vap, 0) = R[i_local][0];
-        R_tensor_mapped(i_vap, 1) = R[i_local][1];
-        R_tensor_mapped(i_vap, 2) = R[i_local][2];
+        R_tensor_mapped(i_vap, 0) = atom->x[i_local][0];
+        R_tensor_mapped(i_vap, 1) = atom->x[i_local][1];
+        R_tensor_mapped(i_vap, 2) = atom->x[i_local][2];
     }
+
+    ivec = new int[nij_max];
+    jvec = new int[nij_max];
+    for (nij = 0; nij < nij_max; nij ++) {
+        ivec[nij] = 0;
+        jvec[nij] = 0;
+    }
+    nij = 0;
 
     // Reset the counters
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
@@ -346,6 +347,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                 j &= (unsigned)NEIGHMASK;
             } else {
                 j = jj - jnum;
+                j &= (unsigned)NEIGHMASK;
             }
 
             rijx = atom->x[j][0] - atom->x[i][0];
@@ -363,6 +365,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                 rij_tensor_mapped(1, nij) = DOUBLE(rijx);
                 rij_tensor_mapped(2, nij) = DOUBLE(rijy);
                 rij_tensor_mapped(3, nij) = DOUBLE(rijz);
+                ivec[nij] = i0;
+                jvec[nij] = get_local_idx(j);
 
                 ijtype = radial_interactions[itype][jtype];
                 inc = radial_counters[local_to_vap_map[i0]][ijtype];
@@ -397,43 +401,60 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         {"Placeholders/g2.rij", *rij_tensor},
     });
 
-    auto t_g2 = Clock::now();
-
     if (graph_model->angular()) {
         error->all(FLERR, "Angular part is not implemented yet!");
     }
 
-    auto t_g4 = Clock::now();
-
     std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
 
-    auto t_run = Clock::now();
+    auto dEdrij = outputs[1].matrix<T>();
+    for (nij = 0; nij < nij_max; nij ++) {
+        double rij = rij_tensor_mapped(0, nij);
+        if (std::abs(rij) < 1e-6) {
+            rijx = 0;
+            rijy = 0;
+            rijz = 0;
+            fx = 0;
+            fy = 0;
+            fz = 0;
+        } else {
+            rijx = rij_tensor_mapped(1, nij);
+            rijy = rij_tensor_mapped(2, nij);
+            rijz = rij_tensor_mapped(3, nij);
+            fx = dEdrij(0, nij) * rijx / rij + dEdrij(1, nij);
+            fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
+            fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
+        }
+
+        atom->f[ivec[nij]][0] += fx;
+        atom->f[ivec[nij]][1] += fy;
+        atom->f[ivec[nij]][2] += fz;
+
+        atom->f[jvec[nij]][0] -= fx;
+        atom->f[jvec[nij]][1] -= fy;
+        atom->f[jvec[nij]][2] -= fz;
+
+        if (evflag) {
+            ev_tally_xyz(ivec[nij], ivec[nij], jvec[nij], atom->nlocal,
+                    0.0, 0.0, fx, fy, fz, rijx, rijy, rijz);
+        }
+    }
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<T>().data()[0];
     }
 
-    vflag_fdotr = 0;
 
     dynamic_bytes = 0;
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
 
     delete g2_v2gmap_tensor;
     delete rij_tensor;
-
     for (i = 0; i < inum; i++)
         delete [] shortneigh[i];
     delete [] shortneigh;
-
-    if (use_timer) {
-        auto t_stop = Clock::now();
-        auto ms_1 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g2 - t_start).count();
-        auto ms_2 = std::chrono::duration_cast<std::chrono::milliseconds>(t_g4 - t_g2).count();
-        auto ms_3 = std::chrono::duration_cast<std::chrono::milliseconds>(t_run - t_g4).count();
-        auto ms_6 = std::chrono::duration_cast<std::chrono::milliseconds>(t_stop - t_start).count();
-        printf("nij_max=%5d nijk_max=%5d nnl_max=%5d comput=%5lld g2=%5lld g4=%5lld run=%5lld\n",
-               nij_max, nijk_max, nnl_max, ms_6, ms_1, ms_2, ms_3);
-    }
+    delete [] ivec;
+    delete [] jvec;
 }
 
 
