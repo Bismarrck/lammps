@@ -99,6 +99,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 
     // Temporarily disable atomic energy.
     eflag_atom = 0;
+    evflag = 1;
 
     // Virial flags: global virial and per-atom virials are all supported.
     vflag_fdotr = 1;
@@ -249,7 +250,7 @@ double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j,
 template <typename T>
 void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 {
-    unsigned int i, j, k;
+    int i, j, k;
     int ii, jj, kk, inum, jnum, itype, jtype, ktype;
     int i_local, i_vap;
     int ijtype;
@@ -336,13 +337,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         jnum = numneigh[i];
 
         for (jj = 0; jj < jnum; jj++) {
-            if (jj < jnum) {
-                j = jlist[jj];
-                j &= (unsigned)NEIGHMASK;
-            } else {
-                j = jj - jnum;
-                j &= (unsigned)NEIGHMASK;
-            }
+            j = jlist[jj];
+            j &= NEIGHMASK;
 
             rijx = atom->x[j][0] - atom->x[i][0];
             rijy = atom->x[j][1] - atom->x[i][1];
@@ -363,7 +359,6 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
                 inc = radial_counters[local_to_vap_map[i]][ijtype];
                 nnl_max = MAX(inc + 1, nnl_max);
 
-                offset = IJ2num(itype, jtype, model_N);
                 g2_v2gmap_tensor_mapped(nij, 0) = ijtype;
                 g2_v2gmap_tensor_mapped(nij, 1) = local_to_vap_map[i];
                 g2_v2gmap_tensor_mapped(nij, 2) = inc;
@@ -397,7 +392,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     }
 
     std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
-    std::cout << "here" << std::endl;
+
     auto dEdrij = outputs[1].matrix<T>();
     for (nij = 0; nij < nij_max; nij ++) {
         double rij = rij_tensor_mapped(0, nij);
@@ -416,17 +411,14 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
             fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
             fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
         }
-
         i = ivec[nij];
         j = jvec[nij];
-
         atom->f[i][0] += fx;
         atom->f[i][1] += fy;
         atom->f[i][2] += fz;
         atom->f[j][0] -= fx;
         atom->f[j][1] -= fy;
         atom->f[j][2] -= fz;
-
         if (evflag) {
             ev_tally_xyz(i, j, atom->nlocal, newton_pair,
                     0.0, 0.0, fx, fy, fz, rijx, rijy, rijz);
@@ -437,6 +429,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         eng_vdwl = outputs[0].scalar<T>().data()[0];
     }
 
+    if (vflag_fdotr)
+        virial_fdotr_compute();
 
     dynamic_bytes = 0;
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
