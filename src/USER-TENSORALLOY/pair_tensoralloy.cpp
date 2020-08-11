@@ -20,11 +20,14 @@
 #include <iostream>
 #include <domain.h>
 #include <chrono>
+#include <mpi.h>
+#include <unistd.h>
 
 #include "force.h"
 #include "comm.h"
 #include "neighbor.h"
 #include "neigh_list.h"
+#include "neigh_request.h"
 #include "error.h"
 
 #include "tensorflow/cc/framework/ops.h"
@@ -61,8 +64,6 @@ typedef std::chrono::high_resolution_clock Clock;
 PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 {
     restartinfo = 0;
-    force->newton_pair = 0;
-    force->newton = 0;
 
     cutmax = 0.0;
     cutforcesq = 0.0;
@@ -263,14 +264,13 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     double rijx, rijy, rijz;
     double rjk2, rik2;
     double volume;
-    int i0, j0, k0;
     double jnx, jny, jnz;
     double knx, kny, knz;
     double fx, fy, fz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     int *ivec, *jvec;
+    int newton_pair;
     const int32 *local_to_vap_map;
-    bool **shortneigh;
     int model_N = graph_model->get_n_elements() + 1;
     bool use_timer = false;
 
@@ -286,8 +286,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     ilist = list->ilist;
     numneigh = list->numneigh;
     firstneigh = list->firstneigh;
+    newton_pair = force->newton_pair;
     local_to_vap_map = vap->get_local_to_vap_map();
-    shortneigh = new bool* [inum];
 
     // Cell
     volume = update_cell<T>();
@@ -296,19 +296,15 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     // Volume
     volume_tensor->flat<T>()(0) = DOUBLE(volume);
 
-    // Positions
+    // Positions: will be removed later
     auto R_tensor_mapped = R_tensor->tensor<T, 2>();
     R_tensor_mapped.setConstant(0.0f);
-    nij_max = (inum - 1) * inum / 2;
 
+    // Determine nij_max
+    nij_max = 0;
     for (ii = 0; ii < inum; ii++) {
-        i_local = ilist[ii];
-        i_vap = local_to_vap_map[i_local];
-        jnum = numneigh[i_local];
-        nij_max += jnum;
-        R_tensor_mapped(i_vap, 0) = atom->x[i_local][0];
-        R_tensor_mapped(i_vap, 1) = atom->x[i_local][1];
-        R_tensor_mapped(i_vap, 2) = atom->x[i_local][2];
+        i = ilist[ii];
+        nij_max += numneigh[i];
     }
 
     ivec = new int[nij_max];
@@ -335,13 +331,11 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
-        i0 = get_local_idx(i);
         itype = atom->type[i];
         jlist = firstneigh[i];
         jnum = numneigh[i];
-        shortneigh[i] = new bool [jnum + ii];
 
-        for (jj = 0; jj < jnum + ii; jj++) {
+        for (jj = 0; jj < jnum; jj++) {
             if (jj < jnum) {
                 j = jlist[jj];
                 j &= (unsigned)NEIGHMASK;
@@ -355,31 +349,28 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
             rijz = atom->x[j][2] - atom->x[i][2];
             rsq = rijx*rijx + rijy*rijy + rijz*rijz;
 
-            shortneigh[i][jj] = false;
-
             if (rsq < cutforcesq) {
-                shortneigh[i][jj] = true;
                 jtype = atom->type[j];
 
                 rij_tensor_mapped(0, nij) = DOUBLE(sqrt(rsq));
                 rij_tensor_mapped(1, nij) = DOUBLE(rijx);
                 rij_tensor_mapped(2, nij) = DOUBLE(rijy);
                 rij_tensor_mapped(3, nij) = DOUBLE(rijz);
-                ivec[nij] = i0;
-                jvec[nij] = get_local_idx(j);
+                ivec[nij] = i;
+                jvec[nij] = j;
 
                 ijtype = radial_interactions[itype][jtype];
-                inc = radial_counters[local_to_vap_map[i0]][ijtype];
+                inc = radial_counters[local_to_vap_map[i]][ijtype];
                 nnl_max = MAX(inc + 1, nnl_max);
 
                 offset = IJ2num(itype, jtype, model_N);
                 g2_v2gmap_tensor_mapped(nij, 0) = ijtype;
-                g2_v2gmap_tensor_mapped(nij, 1) = local_to_vap_map[i0];
+                g2_v2gmap_tensor_mapped(nij, 1) = local_to_vap_map[i];
                 g2_v2gmap_tensor_mapped(nij, 2) = inc;
                 g2_v2gmap_tensor_mapped(nij, 3) = 0;
                 g2_v2gmap_tensor_mapped(nij, 4) = 1;
                 nij += 1;
-                radial_counters[local_to_vap_map[i0]][ijtype] += 1;
+                radial_counters[local_to_vap_map[i]][ijtype] += 1;
             }
         }
     }
@@ -406,7 +397,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     }
 
     std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
-
+    std::cout << "here" << std::endl;
     auto dEdrij = outputs[1].matrix<T>();
     for (nij = 0; nij < nij_max; nij ++) {
         double rij = rij_tensor_mapped(0, nij);
@@ -426,16 +417,18 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
             fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
         }
 
-        atom->f[ivec[nij]][0] += fx;
-        atom->f[ivec[nij]][1] += fy;
-        atom->f[ivec[nij]][2] += fz;
+        i = ivec[nij];
+        j = jvec[nij];
 
-        atom->f[jvec[nij]][0] -= fx;
-        atom->f[jvec[nij]][1] -= fy;
-        atom->f[jvec[nij]][2] -= fz;
+        atom->f[i][0] += fx;
+        atom->f[i][1] += fy;
+        atom->f[i][2] += fz;
+        atom->f[j][0] -= fx;
+        atom->f[j][1] -= fy;
+        atom->f[j][2] -= fz;
 
         if (evflag) {
-            ev_tally_xyz(ivec[nij], ivec[nij], jvec[nij], atom->nlocal,
+            ev_tally_xyz(i, j, atom->nlocal, newton_pair,
                     0.0, 0.0, fx, fy, fz, rijx, rijy, rijz);
         }
     }
@@ -450,9 +443,6 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
     delete g2_v2gmap_tensor;
     delete rij_tensor;
-    for (i = 0; i < inum; i++)
-        delete [] shortneigh[i];
-    delete [] shortneigh;
     delete [] ivec;
     delete [] jvec;
 }
@@ -620,6 +610,17 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         idx ++;
     }
 
+
+//    volatile int lldb = 0;
+//    char hostname[256];
+//    gethostname(hostname, sizeof(hostname));
+//    printf("PID %d on %s ready for attach\n", getpid(), hostname);
+//    fflush(stdout);
+//    while (lldb < 10) {
+//        sleep(5);
+//        lldb += 5;
+//    }
+
     // Load the graph model
     graph_model = new GraphModel(
             string(arg[0]),
@@ -627,11 +628,11 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             error,
             serial_mode,
             comm->me == 0);
-    graph_model->compute_max_occurs(atom->natoms, atom->type);
+    graph_model->compute_max_occurs(atom->nlocal, atom->type);
 
     // Initialize the Virtual-Atom Map
     vap = new VirtualAtomMap(memory);
-    vap->build(graph_model, atom->natoms, atom->type);
+    vap->build(graph_model, atom->nlocal, atom->type);
 
     if (comm->me) {
         std::cout << "VAP initialized." << std::endl;
@@ -665,8 +666,16 @@ void PairTensorAlloy::coeff(int narg, char **arg)
 
 void PairTensorAlloy::init_style()
 {
-    // convert read-in file(s) to arrays and spline them
-    neighbor->request(this, instance_me);
+    if (atom->tag_enable == 0)
+        error->all(FLERR,"Pair style Tersoff requires atom IDs");
+    if (force->newton_pair == 0)
+        error->all(FLERR,"Pair style Tersoff requires newton pair on");
+
+    // need a full neighbor list
+
+    int irequest = neighbor->request(this, instance_me);
+    neighbor->requests[irequest]->half = 0;
+    neighbor->requests[irequest]->full = 1;
 }
 
 /* ----------------------------------------------------------------------

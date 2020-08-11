@@ -196,7 +196,6 @@ Status GraphModel::read_ops(const Tensor& metadata)
     if (parse_status) {
         for( Json::Value::iterator itr = jsonData.begin() ; itr != jsonData.end() ; itr++ ) {
             ops.insert({itr.key().asString(), itr->asString()});
-            std::cout << itr.key().asString() << "=" << itr->asString() << std::endl;
         }
     } else {
         auto message = "Could not decode ops";
