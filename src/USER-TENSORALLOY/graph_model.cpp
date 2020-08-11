@@ -93,12 +93,21 @@ GraphModel::~GraphModel()
    Run
 ------------------------------------------------------------------------- */
 
-Status GraphModel::run(
+std::vector<Tensor> GraphModel::run(
         const std::vector<std::pair<string, Tensor>> &feed_dict,
-        std::vector<Tensor> &outputs)
+        Error *error)
 {
-    std::vector<string> run_ops({ops["free_energy"], ops["forces"], ops["stress"]});
-    return session->Run(feed_dict, run_ops, {}, &outputs);
+    std::vector<Tensor> outputs;
+    std::vector<string> run_ops({ops["free_energy"], ops["dEdrij"]});
+    if (use_angular) {
+        run_ops.emplace_back(ops["dEdrijk"]);
+    }
+    Status status = session->Run(feed_dict, run_ops, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "TensorAlloy internal error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    return outputs;
 }
 
 /* ----------------------------------------------------------------------
@@ -187,6 +196,7 @@ Status GraphModel::read_ops(const Tensor& metadata)
     if (parse_status) {
         for( Json::Value::iterator itr = jsonData.begin() ; itr != jsonData.end() ; itr++ ) {
             ops.insert({itr.key().asString(), itr->asString()});
+            std::cout << itr.key().asString() << "=" << itr->asString() << std::endl;
         }
     } else {
         auto message = "Could not decode ops";
@@ -195,11 +205,11 @@ Status GraphModel::read_ops(const Tensor& metadata)
     if (ops.find("energy") == ops.end()) {
         auto message = "The total energy Op is missing";
         return Status(tensorflow::error::Code::INTERNAL, message);
-    } else if (ops.find("forces") == ops.end()) {
-        auto message = "The atomic force Op is missing";
+    } else if (ops.find("dEdrij") == ops.end()) {
+        auto message = "The radial partial force Op dE/drij is missing";
         return Status(tensorflow::error::Code::INTERNAL, message);
-    } else if (ops.find("stress") == ops.end()) {
-        auto message = "The virial stress Op is missing";
+    } else if (use_angular && ops.find("dEdrijk") == ops.end()) {
+        auto message = "The angular partial force Op dE/drijk is missing";
         return Status(tensorflow::error::Code::INTERNAL, message);
     } else {
         return Status::OK();
