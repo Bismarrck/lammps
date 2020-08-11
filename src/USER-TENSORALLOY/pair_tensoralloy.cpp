@@ -593,11 +593,11 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-    if (graph_model->use_fp64()) {
-        run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
-    } else {
-        run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
-    }
+//    if (graph_model->use_fp64()) {
+//        run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
+//    } else {
+//        run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
+//    }
 }
 
 /* ----------------------------------------------------------------------
@@ -729,15 +729,19 @@ void PairTensorAlloy::coeff(int narg, char **arg)
                 serial_mode = false;
             } else if (val == "on") {
                 serial_mode = true;
-                std::cout << "Serial mode is enabled." << std::endl;
+                if (comm->me == 0) {
+                    std::cout << "Serial mode is enabled" << std::endl;
+                }
             } else {
-                error->all(FLERR, "'on/off' are available values for key 'serial'.");
+                error->all(FLERR, "'on/off' are available values for key 'serial'");
             }
             idx ++;
         } else if (iarg == "etemp") {
             double kelvin = std::atof(string(arg[idx + 1]).c_str());
             etemp = kelvin / eV_to_Kelvin;
-            std::cout << "Electron temperature is " << etemp << " (eV)" << std::endl;
+            if (comm->me == 0) {
+                std::cout << "Electron temperature is " << etemp << " (eV)" << std::endl;
+            }
             idx ++;
         } else {
             symbols.emplace_back(iarg);
@@ -746,13 +750,21 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     }
 
     // Load the graph model
-    graph_model = new GraphModel(string(arg[0]), symbols, error, serial_mode);
+    graph_model = new GraphModel(
+            string(arg[0]),
+            symbols,
+            error,
+            serial_mode,
+            comm->me == 0);
     graph_model->compute_max_occurs(atom->natoms, atom->type);
 
     // Initialize the Virtual-Atom Map
     vap = new VirtualAtomMap(memory);
     vap->build(graph_model, atom->natoms, atom->type);
-    std::cout << "VAP initialized." << std::endl;
+
+    if (comm->me) {
+        std::cout << "VAP initialized." << std::endl;
+    }
 
     // Allocate arrays and tensors.
     allocate();

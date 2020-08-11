@@ -21,8 +21,13 @@ namespace LAMMPS_NS {
     class GraphModel {
 
     public:
-        GraphModel(const string& graph_model_path, const std::vector<string>& symbols, Error *error,
-                bool serial_mode);
+        GraphModel(
+                const string& graph_model_path,
+                const std::vector<string>& symbols,
+                Error *error,
+                bool serial_mode,
+                bool verbose);
+
         ~GraphModel();
 
         bool is_initialized() const { return decoded && max_occurs_initialized; }

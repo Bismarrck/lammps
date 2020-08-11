@@ -28,7 +28,8 @@ GraphModel::GraphModel(
         const string &graph_model_path,
         const std::vector<string>& symbols,
         Error *error,
-        bool serial_mode)
+        bool serial_mode,
+        bool verbose)
 {
     max_occurs_initialized = false;
     decoded = false;
@@ -39,7 +40,9 @@ GraphModel::GraphModel(
     n_elements = 0;
 
     Status load_graph_status = load_graph(graph_model_path, serial_mode);
-    std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+    if (verbose) {
+        std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+    }
 
     std::vector<Tensor> outputs;
     Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
@@ -55,10 +58,12 @@ GraphModel::GraphModel(
     outputs.clear();
     status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
     fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
-    if (fp64) {
-        std::cout << "Graph model uses float64" << std::endl;
-    } else {
-        std::cout << "Graph model uses float32" << std::endl;
+    if (verbose) {
+        if (fp64) {
+            std::cout << "Graph model uses float64" << std::endl;
+        } else {
+            std::cout << "Graph model uses float32" << std::endl;
+        }
     }
 
     outputs.clear();
