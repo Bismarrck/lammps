@@ -53,6 +53,7 @@ typedef std::chrono::high_resolution_clock Clock;
 #define IJ2num(i,j,n) i * n + j
 #define IJK2num(i,j,k,n) i * n * n + j * n + k
 #define eV_to_Kelvin 11604.51812
+#define DOUBLE(x) static_cast<double>(x)
 
 
 /* ---------------------------------------------------------------------- */
@@ -259,6 +260,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     int offset;
     int inc;
     double rsq;
+    double rijx, rijy, rijz;
     double rjk2, rik2;
     double volume;
     int i0, j0, k0;
@@ -299,7 +301,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     auto h_tensor_matrix = h_tensor->matrix<T>();
 
     // Volume
-    volume_tensor->flat<T>()(0) = static_cast<T> (volume);
+    volume_tensor->flat<T>()(0) = DOUBLE(volume);
 
     // Positions
     auto R_tensor_mapped = R_tensor->tensor<T, 2>();
@@ -323,17 +325,8 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         }
     }
 
-    auto g2_shift_tensor = new Tensor(dtype, TensorShape({nij_max, 3}));
-    auto g2_shift_tensor_mapped = g2_shift_tensor->tensor<T, 2>();
-    g2_shift_tensor_mapped.setConstant(0);
-
-    auto g2_ilist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
-    auto g2_ilist_tensor_mapped = g2_ilist_tensor->tensor<int32, 1>();
-    g2_ilist_tensor_mapped.setConstant(0);
-
-    auto g2_jlist_tensor = new Tensor(DT_INT32, TensorShape({nij_max}));
-    auto g2_jlist_tensor_mapped = g2_jlist_tensor->tensor<int32, 1>();
-    g2_jlist_tensor_mapped.setConstant(0);
+    auto rij_tensor = new Tensor(dtype, TensorShape({4, nij_max}));
+    auto rij_tensor_mapped = rij_tensor->tensor<T, 2>();
 
     auto g2_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
     auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
@@ -354,22 +347,24 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
             } else {
                 j = jj - jnum;
             }
+
+            rijx = atom->x[j][0] - atom->x[i][0];
+            rijy = atom->x[j][1] - atom->x[i][1];
+            rijz = atom->x[j][2] - atom->x[i][2];
+            rsq = rijx*rijx + rijy*rijy + rijz*rijz;
+
             shortneigh[i][jj] = false;
-            rsq = get_interatomic_distance(i, j);
 
             if (rsq < cutforcesq) {
                 shortneigh[i][jj] = true;
                 jtype = atom->type[j];
-                j0 = get_local_idx(j);
-                get_shift_vector(j, jnx, jny, jnz);
+
+                rij_tensor_mapped(0, nij) = DOUBLE(sqrt(rsq));
+                rij_tensor_mapped(1, nij) = DOUBLE(rijx);
+                rij_tensor_mapped(2, nij) = DOUBLE(rijy);
+                rij_tensor_mapped(3, nij) = DOUBLE(rijz);
+
                 ijtype = radial_interactions[itype][jtype];
-
-                g2_shift_tensor_mapped(nij, 0) = static_cast<T> (jnx);
-                g2_shift_tensor_mapped(nij, 1) = static_cast<T> (jny);
-                g2_shift_tensor_mapped(nij, 2) = static_cast<T> (jnz);
-                g2_ilist_tensor_mapped(nij) = local_to_vap_map[i0];
-                g2_jlist_tensor_mapped(nij) = local_to_vap_map[j0];
-
                 inc = radial_counters[local_to_vap_map[i0]][ijtype];
                 nnl_max = MAX(inc + 1, nnl_max);
 
@@ -399,181 +394,36 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         {"Placeholders/etemperature", *etemperature_tensor},
         {"Placeholders/row_splits", *row_splits_tensor},
         {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
-        {"Placeholders/g2.ilist", *g2_ilist_tensor},
-        {"Placeholders/g2.jlist", *g2_jlist_tensor},
-        {"Placeholders/g2.n1", *g2_shift_tensor},
+        {"Placeholders/g2.rij", *rij_tensor},
     });
 
     auto t_g2 = Clock::now();
 
-    Tensor *g4_v2gmap_tensor = nullptr;
-    Tensor *g4_ilist_tensor = nullptr;
-    Tensor *g4_jlist_tensor = nullptr;
-    Tensor *g4_klist_tensor = nullptr;
-    Tensor *g4_ij_shift_tensor = nullptr;
-    Tensor *g4_ik_shift_tensor = nullptr;
-    Tensor *g4_jk_shift_tensor = nullptr;
-
     if (graph_model->angular()) {
-        g4_ilist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
-        g4_jlist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
-        g4_klist_tensor = new Tensor(DT_INT32, TensorShape({nijk_max}));
-        g4_ij_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
-        g4_ik_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
-        g4_jk_shift_tensor = new Tensor(dtype, TensorShape({nijk_max, 3}));
-        g4_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nijk_max, 2}));
-
-        auto g4_ilist_tensor_mapped = g4_ilist_tensor->tensor<int32, 1>();
-        auto g4_jlist_tensor_mapped = g4_jlist_tensor->tensor<int32, 1>();
-        auto g4_klist_tensor_mapped = g4_klist_tensor->tensor<int32, 1>();
-        auto g4_ij_shift_tensor_mapped = g4_ij_shift_tensor->tensor<T, 2>();
-        auto g4_ik_shift_tensor_mapped = g4_ik_shift_tensor->tensor<T, 2>();
-        auto g4_jk_shift_tensor_mapped = g4_jk_shift_tensor->tensor<T, 2>();
-        auto g4_v2gmap_tensor_mapped = g4_v2gmap_tensor->tensor<int32, 2>();
-
-        g4_ilist_tensor_mapped.setConstant(0);
-        g4_jlist_tensor_mapped.setConstant(0);
-        g4_klist_tensor_mapped.setConstant(0);
-        g4_ij_shift_tensor_mapped.setConstant(0.0f);
-        g4_ik_shift_tensor_mapped.setConstant(0.0f);
-        g4_jk_shift_tensor_mapped.setConstant(0.0f);
-        g4_v2gmap_tensor_mapped.setConstant(0);
-
-        for (ii = 0; ii < inum; ii++) {
-            i = ilist[ii];
-            i0 = get_local_idx(i);
-            itype = atom->type[i];
-            jlist = firstneigh[i];
-            jnum = numneigh[i];
-
-            for (jj = 0; jj < jnum + ii; jj++) {
-                if (jj < jnum) {
-                    j = jlist[jj];
-                    j &= (unsigned)NEIGHMASK;
-                } else {
-                    j = jj - jnum;
-                }
-
-                if (shortneigh[i][jj]) {
-                    jtype = atom->type[j];
-                    j0 = get_local_idx(j);
-                    get_shift_vector(j, jnx, jny, jnz);
-
-                    for (kk = jj + 1; kk < jnum + ii; kk++) {
-                        if (kk < jnum) {
-                            k = jlist[kk];
-                            k &= (unsigned)NEIGHMASK;
-                        } else {
-                            k = kk - jnum;
-                        }
-                        if (shortneigh[i][kk] && get_interatomic_distance(j, k) < cutforcesq) {
-                            ktype = atom->type[k];
-                            k0 = get_local_idx(k);
-                            get_shift_vector(k, knx, kny, knz);
-
-                            g4_ilist_tensor_mapped(nijk) = local_to_vap_map[i0];
-                            g4_jlist_tensor_mapped(nijk) = local_to_vap_map[j0];
-                            g4_klist_tensor_mapped(nijk) = local_to_vap_map[k0];
-
-                            g4_ij_shift_tensor_mapped(nijk, 0) = static_cast<T> (jnx);
-                            g4_ij_shift_tensor_mapped(nijk, 1) = static_cast<T> (jny);
-                            g4_ij_shift_tensor_mapped(nijk, 2) = static_cast<T> (jnz);
-
-                            g4_ik_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx);
-                            g4_ik_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny);
-                            g4_ik_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz);
-
-                            g4_jk_shift_tensor_mapped(nijk, 0) = static_cast<T> (knx - jnx);
-                            g4_jk_shift_tensor_mapped(nijk, 1) = static_cast<T> (kny - jny);
-                            g4_jk_shift_tensor_mapped(nijk, 2) = static_cast<T> (knz - jnz);
-
-                            offset = IJK2num(itype, jtype, ktype, model_N);
-                            g4_v2gmap_tensor_mapped(nijk, 0) = local_to_vap_map[i0];
-
-                            nijk += 1;
-                        }
-                    }
-                }
-            }
-        }
-        feed_dict.emplace_back("Placeholders/g4.v2g_map", *g4_v2gmap_tensor);
-        feed_dict.emplace_back("Placeholders/g4.ilist", *g4_ilist_tensor);
-        feed_dict.emplace_back("Placeholders/g4.jlist", *g4_jlist_tensor);
-        feed_dict.emplace_back("Placeholders/g4.klist", *g4_klist_tensor);
-        feed_dict.emplace_back("Placeholders/g4.n1", *g4_ij_shift_tensor);
-        feed_dict.emplace_back("Placeholders/g4.n2", *g4_ik_shift_tensor);
-        feed_dict.emplace_back("Placeholders/g4.n3", *g4_jk_shift_tensor);
+        error->all(FLERR, "Angular part is not implemented yet!");
     }
 
     auto t_g4 = Clock::now();
 
-    std::vector<Tensor> outputs;
-    Status status = graph_model->run(feed_dict, outputs);
+    std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
 
-    if (!status.ok()) {
-        auto message = "TensorAlloy internal error: " + status.ToString();
-        error->all(FLERR, message.c_str());
-    }
     auto t_run = Clock::now();
 
     if (eflag_global) {
         eng_vdwl = outputs[0].scalar<T>().data()[0];
     }
 
-    auto F_vap = outputs[1].matrix<T>();
-    const int32 *vap_to_local = vap->get_vap_to_local_map();
-    for (i_vap = 1; i_vap < vap->get_n_atoms_vap(); i_vap++) {
-        i_local = vap_to_local[i_vap];
-        if (i_local >= 0) {
-            atom->f[i_local][0] = static_cast<double> (F_vap(i_vap - 1, 0));
-            atom->f[i_local][1] = static_cast<double> (F_vap(i_vap - 1, 1));
-            atom->f[i_local][2] = static_cast<double> (F_vap(i_vap - 1, 2));
-        }
-    }
-
-    // Lammps uses a special Voigt order: xx yy zz xy xz yz
-    virial[0] = static_cast<double> (-outputs[2].flat<T>()(0));
-    virial[1] = static_cast<double> (-outputs[2].flat<T>()(1));
-    virial[2] = static_cast<double> (-outputs[2].flat<T>()(2));
-    virial[3] = static_cast<double> (-outputs[2].flat<T>()(5));
-    virial[4] = static_cast<double> (-outputs[2].flat<T>()(4));
-    virial[5] = static_cast<double> (-outputs[2].flat<T>()(3));
-
     vflag_fdotr = 0;
 
     dynamic_bytes = 0;
-    dynamic_bytes += g2_shift_tensor->TotalBytes();
-    dynamic_bytes += g2_ilist_tensor->TotalBytes();
-    dynamic_bytes += g2_jlist_tensor->TotalBytes();
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
 
-    delete g2_shift_tensor;
-    delete g2_ilist_tensor;
-    delete g2_jlist_tensor;
     delete g2_v2gmap_tensor;
+    delete rij_tensor;
 
     for (i = 0; i < inum; i++)
         delete [] shortneigh[i];
     delete [] shortneigh;
-
-    if (graph_model->angular()) {
-
-        dynamic_bytes += g4_v2gmap_tensor->TotalBytes();
-        dynamic_bytes += g4_ilist_tensor->TotalBytes();
-        dynamic_bytes += g4_jlist_tensor->TotalBytes();
-        dynamic_bytes += g4_klist_tensor->TotalBytes();
-        dynamic_bytes += g4_ij_shift_tensor->TotalBytes();
-        dynamic_bytes += g4_ik_shift_tensor->TotalBytes();
-        dynamic_bytes += g4_jk_shift_tensor->TotalBytes();
-
-        delete g4_v2gmap_tensor;
-        delete g4_ilist_tensor;
-        delete g4_jlist_tensor;
-        delete g4_klist_tensor;
-        delete g4_ij_shift_tensor;
-        delete g4_ik_shift_tensor;
-        delete g4_jk_shift_tensor;
-    }
 
     if (use_timer) {
         auto t_stop = Clock::now();
@@ -593,11 +443,11 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
-//    if (graph_model->use_fp64()) {
-//        run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
-//    } else {
-//        run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
-//    }
+    if (graph_model->use_fp64()) {
+        run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
+    } else {
+        run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
+    }
 }
 
 /* ----------------------------------------------------------------------
