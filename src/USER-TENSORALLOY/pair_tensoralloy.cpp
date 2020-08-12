@@ -19,26 +19,18 @@
 #include <map>
 #include <iostream>
 #include <domain.h>
-#include <chrono>
-#include <mpi.h>
-#include <unistd.h>
-
 #include "force.h"
 #include "comm.h"
 #include "neighbor.h"
 #include "neigh_list.h"
 #include "neigh_request.h"
 #include "error.h"
-
 #include "tensorflow/cc/framework/ops.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/platform/types.h"
-
 #include "pair_tensoralloy.h"
-#include "tensoralloy_utils.h"
 
 using namespace LAMMPS_NS;
 
@@ -50,11 +42,7 @@ using tensorflow::string;
 using tensorflow::Tensor;
 using tensorflow::TensorShape;
 
-typedef std::chrono::high_resolution_clock Clock;
-
 #define MAXLINE 1024
-#define IJ2num(i,j,n) i * n + j
-#define IJK2num(i,j,k,n) i * n * n + j * n + k
 #define eV_to_Kelvin 11604.51812
 #define DOUBLE(x) static_cast<double>(x)
 
@@ -64,18 +52,22 @@ typedef std::chrono::high_resolution_clock Clock;
 PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
 {
     restartinfo = 0;
-
     cutmax = 0.0;
     cutforcesq = 0.0;
 
-    etemp = 0.0;
+    single_enable = 0;
+    one_coeff = 1;
+    manybody_flag = 1;
 
+    // Set comm size needed by this Pair
+    comm_forward = 0;
+    comm_reverse = 0;
+
+    // Internal variables and pointers
     radial_interactions = nullptr;
     radial_counters = nullptr;
     vap = nullptr;
     graph_model = nullptr;
-
-    // Tensor pointers
     R_tensor = nullptr;
     h_tensor = nullptr;
     volume_tensor = nullptr;
@@ -85,36 +77,12 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     etemperature_tensor = nullptr;
     nnl_max_tensor = nullptr;
     row_splits_tensor = nullptr;
-
-    // Use parallel mode by default.
-    serial_mode = false;
-
-    // set comm size needed by this Pair
-    comm_forward = 0;
-    comm_reverse = 0;
-
-    single_enable = 0;
-    one_coeff = 1;
-    manybody_flag = 1;
-
-    // Temporarily disable atomic energy.
-    eflag_atom = 0;
-    evflag = 1;
-
-    // Virial flags: global virial and per-atom virials are all supported.
-    vflag_fdotr = 1;
-    vflag_atom = 1;
-    vflag_either = 1;
-    vflag_global = 1;
+    etemp = 0.0;
+    serial_mode = true;
 
     // Set the variables to their default values
     dynamic_bytes = 0;
     nmax = -1;
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            h_inv[i][j] = 0.0;
-        }
-    }
 }
 
 /* ----------------------------------------------------------------------
@@ -173,7 +141,6 @@ PairTensorAlloy::~PairTensorAlloy()
 
    * h: the 3x3 lattice tensor
    * volume: the volume of the latticce
-   * h_inv: the inverse of the lattice tensor
 ------------------------------------------------------------------------- */
 template <typename T>
 double PairTensorAlloy::update_cell()
@@ -197,50 +164,7 @@ double PairTensorAlloy::update_cell()
     else {
         volume = domain->xprd * domain->yprd;
     }
-
-    h_inv[0][0] = domain->h_inv[0];
-    h_inv[1][1] = domain->h_inv[1];
-    h_inv[2][2] = domain->h_inv[2];
-    h_inv[2][1] = domain->h_inv[3];
-    h_inv[2][0] = domain->h_inv[4];
-    h_inv[1][0] = domain->h_inv[5];
-    h_inv[0][1] = 0.0;
-    h_inv[0][2] = 0.0;
-    h_inv[1][2] = 0.0;
-
     return volume;
-}
-
-/* ----------------------------------------------------------------------
-   Calculate the shift vector (nx, ny, nz) of atom `i`.
-------------------------------------------------------------------------- */
-
-void PairTensorAlloy::get_shift_vector(const int i, double &nx, double &ny, double &nz)
-{
-    double nhx = atom->x[i][0] - atom->x[atom->tag[i] - 1][0];
-    double nhy = atom->x[i][1] - atom->x[atom->tag[i] - 1][1];
-    double nhz = atom->x[i][2] - atom->x[atom->tag[i] - 1][2];
-
-    nx = round(nhx * h_inv[0][0] + nhy * h_inv[1][0] + nhz * h_inv[2][0]);
-    ny = round(nhx * h_inv[0][1] + nhy * h_inv[1][1] + nhz * h_inv[2][1]);
-    nz = round(nhx * h_inv[0][2] + nhy * h_inv[1][2] + nhz * h_inv[2][2]);
-}
-
-/* ----------------------------------------------------------------------
-   Calculate the interatomic distance of (i, j).
-------------------------------------------------------------------------- */
-
-double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j, bool square)
-{
-    double rsq;
-    double rijx, rijy, rijz;
-
-    rijx = atom->x[j][0] - atom->x[i][0];
-    rijy = atom->x[j][1] - atom->x[i][1];
-    rijz = atom->x[j][2] - atom->x[i][2];
-    rsq = rijx*rijx + rijy*rijy + rijz*rijz;
-
-    return square ? rsq : sqrt(rsq);
 }
 
 /* ----------------------------------------------------------------------
@@ -248,32 +172,23 @@ double PairTensorAlloy::get_interatomic_distance(unsigned int i, unsigned int j,
 ------------------------------------------------------------------------- */
 
 template <typename T>
-void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
+void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
 {
-    int i, j, k;
-    int ii, jj, kk, inum, jnum, itype, jtype, ktype;
-    int i_local, i_vap;
+    int i, j;
+    int ii, jj, inum, jnum, itype, jtype;
     int ijtype;
-    int nij_max = 0;
-    int nij = 0;
-    int nijk = 0;
-    int nijk_max = 0;
+    int nij_max;
+    int nij;
     int nnl_max = 0;
-    int offset;
     int inc;
     double rsq;
     double rijx, rijy, rijz;
-    double rjk2, rik2;
     double volume;
-    double jnx, jny, jnz;
-    double knx, kny, knz;
     double fx, fy, fz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     int *ivec, *jvec;
     int newton_pair;
-    const int32 *local_to_vap_map;
-    int model_N = graph_model->get_n_elements() + 1;
-    bool use_timer = false;
+    const int32 *local_to_vap_map, *vap_to_local_map;
 
     ev_init(eflag, vflag);
 
@@ -289,6 +204,7 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
     firstneigh = list->firstneigh;
     newton_pair = force->newton_pair;
     local_to_vap_map = vap->get_local_to_vap_map();
+    vap_to_local_map = vap->get_vap_to_local_map();
 
     // Cell
     volume = update_cell<T>();
@@ -425,12 +341,17 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
         }
     }
 
-    if (eflag_global) {
-        eng_vdwl = outputs[0].scalar<T>().data()[0];
+    auto pe_atom = outputs[2].flat<T>();
+    for (i = 1; i < vap->get_n_atoms_vap(); i++) {
+        if (eflag) {
+            ev_tally_full(vap_to_local_map[i], 2.0 * pe_atom(i - 1),
+                    0.0, 0.0, 0.0, 0.0, 0.0);
+        }
     }
 
-    if (vflag_fdotr)
+    if (vflag_fdotr) {
         virial_fdotr_compute();
+    }
 
     dynamic_bytes = 0;
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
@@ -449,9 +370,9 @@ void PairTensorAlloy::run_once_universal(int eflag, int vflag, DataType dtype)
 void PairTensorAlloy::compute(int eflag, int vflag)
 {
     if (graph_model->use_fp64()) {
-        run_once_universal<double>(eflag, vflag, DataType::DT_DOUBLE);
+        run<double>(eflag, vflag, DataType::DT_DOUBLE);
     } else {
-        run_once_universal<float>(eflag, vflag, DataType::DT_FLOAT);
+        run<float>(eflag, vflag, DataType::DT_FLOAT);
     }
 }
 
@@ -566,6 +487,8 @@ void PairTensorAlloy::settings(int narg, char **/*arg*/)
     if (narg > 0) error->all(FLERR, "Illegal pair_style command");
 }
 
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "cert-err34-c"
 /* ----------------------------------------------------------------------
    The implementation of `pair_coef
 ------------------------------------------------------------------------- */
@@ -604,17 +527,6 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         idx ++;
     }
 
-
-//    volatile int lldb = 0;
-//    char hostname[256];
-//    gethostname(hostname, sizeof(hostname));
-//    printf("PID %d on %s ready for attach\n", getpid(), hostname);
-//    fflush(stdout);
-//    while (lldb < 10) {
-//        sleep(5);
-//        lldb += 5;
-//    }
-
     // Load the graph model
     graph_model = new GraphModel(
             string(arg[0]),
@@ -628,7 +540,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     vap = new VirtualAtomMap(memory);
     vap->build(graph_model, atom->nlocal, atom->type);
 
-    if (comm->me) {
+    if (comm->me == 0) {
         std::cout << "VAP initialized." << std::endl;
     }
 
@@ -652,6 +564,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     // Set `cutmax`.
     cutmax = graph_model->get_cutoff();
 }
+#pragma clang diagnostic pop
 
 
 /* ----------------------------------------------------------------------

@@ -52,11 +52,8 @@ namespace LAMMPS_NS {
         VirtualAtomMap *vap;
 
         template <typename T> double update_cell ();
-        template <typename T> void run_once_universal(int eflag, int vflag, DataType dtype);
+        template <typename T> void run(int eflag, int vflag, DataType dtype);
         template <typename T> void allocate_with_dtype(DataType dtype);
-
-        void get_shift_vector(int i, double &nx, double &ny, double &nz);
-        double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
 
         /*
          * Return the atom index in the local frame.
@@ -78,8 +75,6 @@ namespace LAMMPS_NS {
         double etemp;
 
         Tensor *h_tensor;
-        double h_inv[3][3];
-
         Tensor *R_tensor;
         Tensor *volume_tensor;
         Tensor *n_atoms_vap_tensor;

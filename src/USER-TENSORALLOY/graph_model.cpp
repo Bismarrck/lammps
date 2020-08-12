@@ -98,7 +98,7 @@ std::vector<Tensor> GraphModel::run(
         Error *error)
 {
     std::vector<Tensor> outputs;
-    std::vector<string> run_ops({ops["free_energy"], ops["dEdrij"]});
+    std::vector<string> run_ops({ops["free_energy"], ops["dEdrij"], ops["atomic"]});
     if (use_angular) {
         run_ops.emplace_back(ops["dEdrijk"]);
     }
