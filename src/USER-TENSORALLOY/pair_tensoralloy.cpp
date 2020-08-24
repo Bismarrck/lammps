@@ -527,6 +527,16 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         idx ++;
     }
 
+//    volatile int lldb = 0;
+//    char hostname[256];
+//    gethostname(hostname, sizeof(hostname));
+//    printf("PID %d on %s ready for attach\n", getpid(), hostname);
+//    fflush(stdout);
+//    while (lldb < 10) {
+//        sleep(5);
+//        lldb += 5;
+//    }
+
     // Load the graph model
     graph_model = new GraphModel(
             string(arg[0]),
