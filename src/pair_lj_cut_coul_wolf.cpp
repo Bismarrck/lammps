@@ -37,6 +37,7 @@ PairLJCutCoulWolf::PairLJCutCoulWolf(LAMMPS *lmp) : Pair(lmp)
 {
   single_enable = 0;
   writedata = 1;
+  centroidstressflag = 1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -305,6 +306,7 @@ double PairLJCutCoulWolf::init_one(int i, int j)
   lj3[j][i] = lj3[i][j];
   lj4[j][i] = lj4[i][j];
   offset[j][i] = offset[i][j];
+  cut_ljsq[j][i] = cut_ljsq[i][j];
 
   // compute I,J contribution to long-range tail correction
   // count total # of atoms of type I and J via Allreduce

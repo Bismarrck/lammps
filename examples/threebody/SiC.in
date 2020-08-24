@@ -1,0 +1,36 @@
+# Simple regression tests for threebody potentials
+
+# NOTE: These are not intended to represent real materials
+
+units           metal
+
+atom_style      atomic
+atom_modify     map array
+boundary        p p p
+atom_modify	sort 0 0.0
+
+# temperature
+
+variable t equal 1800.0
+
+# cubic diamond unit cell
+
+read_data SiC.data
+
+mass            *       28.06
+
+velocity 	all create $t 5287287 mom yes rot yes dist gaussian
+
+
+# Test Tersoff/Mod model for Si
+
+pair_style      tersoff
+pair_coeff 	* * SiC.tersoff Si C
+
+thermo          10
+fix             1 all nvt temp $t $t 0.1
+fix_modify 	1 energy yes
+timestep        1.0e-3
+neighbor        1.0 bin
+neigh_modify    every 1 delay 10 check yes
+run             0

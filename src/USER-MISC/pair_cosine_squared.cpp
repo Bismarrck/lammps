@@ -125,7 +125,7 @@ void PairCosineSquared::coeff(int narg, char **arg)
 {
   if (narg < 4 || narg > 6)
     error->all(FLERR, "Incorrect args for pair coefficients (too few or too many)");
-  
+
   if (!allocated)
     allocate();
 
@@ -180,7 +180,7 @@ void PairCosineSquared::coeff(int narg, char **arg)
 }
 
 /* ----------------------------------------------------------------------
-   init specific to this pair style (unneccesary)
+   init specific to this pair style (unnecessary)
 ------------------------------------------------------------------------- */
 
 /*
@@ -323,8 +323,8 @@ void PairCosineSquared::read_restart_settings(FILE *fp)
 void PairCosineSquared::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp, "%d %g %g %g %d\n", i, epsilon[i][i], sigma[i][i],
-            cut[i][i], wcaflag[i][i]);
+    fprintf(fp, "%d %g %g %g %s\n", i, epsilon[i][i], sigma[i][i], cut[i][i],
+            (wcaflag[i][i] ? "wca" : ""));
 }
 
 /* ----------------------------------------------------------------------
@@ -335,8 +335,8 @@ void PairCosineSquared::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp, "%d %d %g %g %g %d\n", i, j, epsilon[i][j], sigma[i][j],
-              cut[i][j], wcaflag[i][j]);
+      fprintf(fp, "%d %d %g %g %g %s\n", i, j, epsilon[i][j], sigma[i][j],
+              cut[i][j], (wcaflag[i][j] ? "wca" : ""));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -459,7 +459,7 @@ double PairCosineSquared::single(int /* i */, int /* j */, int itype, int jtype,
                          double &fforce)
 {
   double r, r2inv, r6inv, cosone, force, energy;
-  
+
   r = sqrt(rsq);
 
   if (r <= sigma[itype][jtype]) {
@@ -478,7 +478,7 @@ double PairCosineSquared::single(int /* i */, int /* j */, int itype, int jtype,
     }
   } else {
     cosone = cos(MY_PI*(r-sigma[itype][jtype]) / (2.0*w[itype][jtype]));
-    force = -(MY_PI*epsilon[itype][jtype] / (2.0*w[itype][jtype])) * 
+    force = -(MY_PI*epsilon[itype][jtype] / (2.0*w[itype][jtype])) *
                  sin(MY_PI*(r-sigma[itype][jtype]) / w[itype][jtype]) / r;
     energy = -epsilon[itype][jtype]*cosone*cosone;
   }

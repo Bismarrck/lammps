@@ -100,8 +100,8 @@ KokkosLMP::KokkosLMP(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 
     } else if (strcmp(arg[iarg],"g") == 0 ||
                strcmp(arg[iarg],"gpus") == 0) {
-#ifndef KOKKOS_ENABLE_CUDA
-      error->all(FLERR,"GPUs are requested but Kokkos has not been compiled for CUDA");
+#ifndef LMP_KOKKOS_GPU
+      error->all(FLERR,"GPUs are requested but Kokkos has not been compiled for CUDA or HIP");
 #endif
       if (iarg+2 > narg) error->all(FLERR,"Invalid Kokkos command-line args");
       ngpus = atoi(arg[iarg+1]);
@@ -164,9 +164,9 @@ KokkosLMP::KokkosLMP(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
     if (logfile) fprintf(logfile,"  will use up to %d GPU(s) per node\n",ngpus);
   }
 
-#ifdef KOKKOS_ENABLE_CUDA
+#ifdef LMP_KOKKOS_GPU
   if (ngpus <= 0)
-    error->all(FLERR,"Kokkos has been compiled for CUDA but no GPUs are requested");
+    error->all(FLERR,"Kokkos has been compiled for CUDA or HIP but no GPUs are requested");
 #endif
 
 #ifndef KOKKOS_ENABLE_SERIAL
@@ -187,7 +187,7 @@ KokkosLMP::KokkosLMP(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 
   binsize = 0.0;
 #ifdef KOKKOS_ENABLE_CUDA
-  cuda_aware_flag = 1; 
+  cuda_aware_flag = 1;
 #else
   cuda_aware_flag = 0;
 #endif
@@ -220,7 +220,7 @@ KokkosLMP::KokkosLMP(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 
   int nmpi = 0;
   MPI_Comm_size(world,&nmpi);
-  if (nmpi > 0) {
+  if (nmpi > 1) {
 
 #if defined(MPI_VERSION) && (MPI_VERSION > 2)
     // Check for IBM Spectrum MPI
@@ -253,13 +253,13 @@ KokkosLMP::KokkosLMP(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 #if defined(MPICH) && defined(MVAPICH2_VERSION)
       char* str;
       cuda_aware_flag = 0;
-      if ((str = getenv("MV2_ENABLE_CUDA")))
+      if ((str = getenv("MV2_USE_CUDA")))
         if ((strcmp(str,"1") == 0))
           cuda_aware_flag = 1;
 
       if (!cuda_aware_flag)
         if (me == 0)
-          error->warning(FLERR,"MVAPICH2 'MV2_ENABLE_CUDA' environment variable is not set. Disabling CUDA-aware MPI");
+          error->warning(FLERR,"MVAPICH2 'MV2_USE_CUDA' environment variable is not set. Disabling CUDA-aware MPI");
     // pure MPICH or some unsupported MPICH derivative
 #elif defined(MPICH) && !defined(MVAPICH2_VERSION)
       if (me == 0)
@@ -306,7 +306,7 @@ void KokkosLMP::accelerator(int narg, char **arg)
           neighflag = HALFTHREAD;
         else
           neighflag = HALF;
-      } else if (strcmp(arg[iarg+1],"n2") == 0) neighflag = N2;
+      }
       else error->all(FLERR,"Illegal package kokkos command");
       if (!neighflag_qeq_set) neighflag_qeq = neighflag;
       iarg += 2;
@@ -318,7 +318,7 @@ void KokkosLMP::accelerator(int narg, char **arg)
           neighflag_qeq = HALFTHREAD;
         else
           neighflag_qeq = HALF;
-      } else if (strcmp(arg[iarg+1],"n2") == 0) neighflag_qeq = N2;
+      }
       else error->all(FLERR,"Illegal package kokkos command");
       neighflag_qeq_set = 1;
       iarg += 2;
@@ -397,9 +397,14 @@ void KokkosLMP::accelerator(int narg, char **arg)
     } else error->all(FLERR,"Illegal package kokkos command");
   }
 
+#ifdef KOKKOS_ENABLE_CUDA
+
+  int nmpi = 0;
+  MPI_Comm_size(world,&nmpi);
+
   // if "cuda/aware off" and "comm device", change to "comm host"
 
-  if (!cuda_aware_flag) {
+  if (!cuda_aware_flag && nmpi > 1) {
     if (exchange_comm_classic == 0 && exchange_comm_on_host == 0) {
       exchange_comm_on_host = 1;
       exchange_comm_changed = 1;
@@ -430,6 +435,8 @@ void KokkosLMP::accelerator(int narg, char **arg)
       reverse_comm_changed = 0;
     }
   }
+
+#endif
 
   // set newton flags
   // set neighbor binsize, same as neigh_modify command
