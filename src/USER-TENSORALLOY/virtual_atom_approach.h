@@ -19,7 +19,7 @@ namespace LAMMPS_NS {
         explicit VirtualAtomMap(Memory *);
         ~VirtualAtomMap();
 
-        void build(const GraphModel&, int, const int *);
+        void build(const GraphModel*, int, const int *);
 
         const int32 *get_row_splits() const { return splits; }
         const int32 *get_local_to_vap_map() const { return local_to_vap_map; }

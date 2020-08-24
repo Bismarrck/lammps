@@ -43,24 +43,17 @@ namespace LAMMPS_NS {
 
     protected:
 
-        GraphModel graph_model;
+        GraphModel *graph_model;
         double cutforcesq, cutmax;
 
-        int32 *g2_offset_map;
-        int32 *g4_offset_map;
         int32 **radial_interactions;
+        int32 **radial_counters;
+
         VirtualAtomMap *vap;
 
-        void init_offset_maps();
-        void read_graph_model(const string& filename, const vector<string>& symbols);
-
         template <typename T> double update_cell ();
-        template <typename T> void run_once(int eflag, int vflag, DataType dtype);
-        template <typename T> void run_once_universal(int eflag, int vflag, DataType dtype);
+        template <typename T> void run(int eflag, int vflag, DataType dtype);
         template <typename T> void allocate_with_dtype(DataType dtype);
-
-        void get_shift_vector(int i, double &nx, double &ny, double &nz);
-        double get_interatomic_distance (unsigned int i, unsigned int j, bool square=true);
 
         /*
          * Return the atom index in the local frame.
@@ -75,29 +68,19 @@ namespace LAMMPS_NS {
         void allocate();
 
     private:
-        // TensorFlow variables and functions
-        Status load_graph(const string& filename);
-        std::unique_ptr<tensorflow::Session> session;
+
         bool serial_mode;
-        bool use_fp64;
-        bool use_legacy_keys;
 
         // Electron temperature (eV)
         double etemp;
 
         Tensor *h_tensor;
-        double h_inv[3][3];
-
-        int32 **g2_counters;
-
         Tensor *R_tensor;
         Tensor *volume_tensor;
         Tensor *n_atoms_vap_tensor;
         Tensor *nnl_max_tensor;
         Tensor *pulay_stress_tensor;
         Tensor *etemperature_tensor;
-        Tensor *eentropy_tensor;
-        Tensor *composition_tensor;
         Tensor *atom_mask_tensor;
         Tensor *row_splits_tensor;
 

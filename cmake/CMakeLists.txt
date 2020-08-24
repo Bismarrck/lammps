@@ -471,19 +471,19 @@ if(PKG_USER-TENSORALLOY)
   find_package(TensorflowCC REQUIRED)
 
   set(USER-TENSORALLOY_SOURCES_DIR ${LAMMPS_SOURCE_DIR}/USER-TENSORALLOY)
-  set(USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/pair_tensoralloy.cpp
-                               ${USER-TENSORALLOY_SOURCES_DIR}/virtual_atom_approach.cpp
-                               ${USER-TENSORALLOY_SOURCES_DIR}/graph_model.cpp
-                               ${USER-TENSORALLOY_SOURCES_DIR}/tensoralloy_utils.cpp
-                               ${USER-TENSORALLOY_SOURCES_DIR}/jsoncpp/jsoncpp.cpp)
+  file(GLOB USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/[^.]*.cpp)
+  list(APPEND USER-TENSORALLOY_SOURCES ${USER-TENSORALLOY_SOURCES_DIR}/jsoncpp/jsoncpp.cpp)
+  file(GLOB USER-TENSORALLOY_HEADERS ${USER-TENSORALLOY_SOURCES_DIR}/[^.]*.h)
+  list(APPEND USER-TENSORALLOY_HEADERS ${USER-TENSORALLOY_SOURCES_DIR}/jsoncpp/json/[^.]*.h)
 
-  include_directories(${USER-TENSORALLOY_SOURCES_DIR})
+  DetectBuildSystemConflict(${LAMMPS_SOURCE_DIR} ${USER-TENSORALLOY_SOURCES} ${USER-TENSORALLOY_HEADERS})
+
+  target_sources(lammps PRIVATE ${USER-TENSORALLOY_SOURCES})
+  target_include_directories(lammps PRIVATE ${USER-TENSORALLOY_SOURCES_DIR})
+  target_link_libraries(lammps PRIVATE TensorflowCC::TensorflowCC)
   RegisterStyles(${USER-TENSORALLOY_SOURCES_DIR})
   RegisterPackages(${USER-TENSORALLOY_SOURCES_DIR})
 
-  add_library(tensoralloy STATIC ${USER-TENSORALLOY_SOURCES})
-  target_link_libraries(tensoralloy TensorflowCC::TensorflowCC)
-  list(APPEND LAMMPS_LINK_LIBS tensoralloy)
 endif()
 
 if(PKG_USER-AWPMD)

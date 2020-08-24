@@ -9,6 +9,7 @@
 
 #include "tensorflow/core/platform/default/integral_types.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/public/session.h"
 
 namespace LAMMPS_NS {
 
@@ -20,47 +21,47 @@ namespace LAMMPS_NS {
     class GraphModel {
 
     public:
-        GraphModel();
-        ~GraphModel() = default;;
+        GraphModel(
+                const string& graph_model_path,
+                const std::vector<string>& symbols,
+                Error *error,
+                bool serial_mode,
+                bool verbose);
 
-        Status read(const Tensor&, const string&, const std::vector<string>&);
+        ~GraphModel();
+
         bool is_initialized() const { return decoded && max_occurs_initialized; }
         int get_n_elements() const { return n_elements; }
         bool angular() const { return use_angular; }
-        double get_cutoff() const { return rc; }
+        bool use_fp64() const { return fp64; }
+        double get_cutoff(bool angular=false) const { return angular ? acut : rcut; }
         unsigned int get_max_occur(int index) const { return max_occurs[index]; }
-        int get_ndim(bool is_angular=false) const {
-            if (is_angular) {
-                return n_gamma * n_beta * n_zeta;
-            } else {
-                return n_omega * n_eta;
-            }
-        }
 
-        bool use_universal_transformer() { return cls == "UniversalTransformer"; }
-        string get_transformer_name() const { return cls; }
+        std::unique_ptr<tensorflow::Session> session;
 
         void compute_max_occurs(int natoms, const int* atom_types);
         void print();
 
+        std::vector<Tensor> run(const std::vector<std::pair<string, Tensor>> &, Error *);
+
     protected:
         std::vector<unsigned int> max_occurs;
         bool use_angular;
-        double rc;
+        double rcut;
+        double acut;
         int n_elements;
         std::vector<string> symbols;
-        int n_eta;
-        int n_omega;
-        int n_beta;
-        int n_gamma;
-        int n_zeta;
         string filename;
-        string cls;
+        std::map<string, string> ops;
 
-    private:
+        Status load_graph(const string& filename, bool serial_mode);
+        Status read_transformer_params(const Tensor&, const string&, const std::vector<string>&);
+        Status read_ops(const Tensor&);
+
+        bool fp64;
+
         bool decoded;
         bool max_occurs_initialized;
-
     };
 }
 

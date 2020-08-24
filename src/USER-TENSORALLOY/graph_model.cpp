@@ -6,6 +6,8 @@
 #include <iostream>
 #include <iomanip>
 
+#include "error.h"
+
 #include "jsoncpp/json/json.h"
 #include "graph_model.h"
 
@@ -22,27 +24,131 @@ using tensorflow::int32;
    Initialization.
 ------------------------------------------------------------------------- */
 
-GraphModel::GraphModel()
+GraphModel::GraphModel(
+        const string &graph_model_path,
+        const std::vector<string>& symbols,
+        Error *error,
+        bool serial_mode,
+        bool verbose)
 {
     max_occurs_initialized = false;
     decoded = false;
-    filename = "";
-    rc = 0.0;
+    filename = graph_model_path;
+    rcut = 0.0;
+    acut = 0.0;
     use_angular = false;
-    n_beta = 0;
-    n_omega = 0;
-    n_beta = 0;
-    n_gamma = 0;
-    n_zeta = 0;
-    n_eta = 0;
     n_elements = 0;
+
+    Status load_graph_status = load_graph(graph_model_path, serial_mode);
+    if (verbose) {
+        std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+    }
+
+    std::vector<Tensor> outputs;
+    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "Decode graph model error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    status = read_transformer_params(outputs[0], graph_model_path, symbols);
+    if (!status.ok()) {
+        error->all(FLERR, status.error_message().c_str());
+    }
+
+    outputs.clear();
+    status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
+    fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
+    if (verbose) {
+        if (fp64) {
+            std::cout << "Graph model uses float64" << std::endl;
+        } else {
+            std::cout << "Graph model uses float32" << std::endl;
+        }
+    }
+
+    outputs.clear();
+    status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "Decode graph model error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    status = read_ops(outputs[0]);
+    if (!status.ok()) {
+        error->all(FLERR, status.error_message().c_str());
+    }
+
+    decoded = true;
 }
 
 /* ----------------------------------------------------------------------
-   Read the metadata of the graph model.
+   Deallocation
 ------------------------------------------------------------------------- */
 
-Status GraphModel::read(
+GraphModel::~GraphModel()
+{
+    session.reset();
+}
+
+/* ----------------------------------------------------------------------
+   Run
+------------------------------------------------------------------------- */
+
+std::vector<Tensor> GraphModel::run(
+        const std::vector<std::pair<string, Tensor>> &feed_dict,
+        Error *error)
+{
+    std::vector<Tensor> outputs;
+    std::vector<string> run_ops({ops["free_energy"], ops["dEdrij"], ops["atomic"]});
+    if (use_angular) {
+        run_ops.emplace_back(ops["dEdrijk"]);
+    }
+    Status status = session->Run(feed_dict, run_ops, {}, &outputs);
+    if (!status.ok()) {
+        auto message = "TensorAlloy internal error: " + status.ToString();
+        error->all(FLERR, message.c_str());
+    }
+    return outputs;
+}
+
+/* ----------------------------------------------------------------------
+   Load the graph model
+------------------------------------------------------------------------- */
+
+// Reads a model graph definition from disk, and creates a session object you
+// can use to run it.
+Status GraphModel::load_graph(const string &graph_file_name, bool serial_mode) {
+    tensorflow::GraphDef graph_def;
+    Status load_graph_status =
+            ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
+    if (!load_graph_status.ok()) {
+        return tensorflow::errors::NotFound("Failed to load compute graph at '",
+                                            graph_file_name, "'");
+    }
+
+    // Initialize the session
+    tensorflow::SessionOptions options;
+    options.config.set_allow_soft_placement(true);
+    options.config.set_log_device_placement(false);
+
+    if (serial_mode) {
+        options.config.set_inter_op_parallelism_threads(1);
+        options.config.set_intra_op_parallelism_threads(1);
+    }
+
+    session.reset(tensorflow::NewSession(options));
+    Status session_create_status = session->Create(graph_def);
+    if (!session_create_status.ok()) {
+        return session_create_status;
+    }
+    return Status::OK();
+}
+
+
+/* ----------------------------------------------------------------------
+   Read parameters for initializing a `UniversalTransformer`.
+------------------------------------------------------------------------- */
+
+Status GraphModel::read_transformer_params(
         const Tensor& metadata,
         const string& graph_model_path,
         const std::vector<string>& lammps_symbols)
@@ -54,18 +160,8 @@ Status GraphModel::read(
 
     if (parse_status) {
         filename = graph_model_path;
-        cls = jsonData["class"].asString();
-
-        if (cls == "UniversalTransformer") {
-            rc = jsonData["rcut"].asDouble();
-        } else {
-            rc = jsonData["rc"].asDouble();
-            n_eta = jsonData["eta"].size();
-            n_omega = jsonData["omega"].size();
-            n_beta = jsonData["beta"].size();
-            n_gamma = jsonData["gamma"].size();
-            n_zeta = jsonData["zeta"].size();
-        }
+        rcut = jsonData["rcut"].asDouble();
+        acut = jsonData["acut"].asDouble();
         use_angular = jsonData["angular"].asBool();
         Json::Value graph_model_symbols = jsonData["elements"];
         n_elements = graph_model_symbols.size();
@@ -80,11 +176,43 @@ Status GraphModel::read(
             }
         }
     } else {
-        auto message = "Could not decode the graph model.";
+        auto message = "Could not decode transformer parameters";
         return Status(tensorflow::error::Code::INTERNAL, message);
     }
-    decoded = true;
     return Status::OK();
+}
+
+/* ----------------------------------------------------------------------
+   Read Ops
+------------------------------------------------------------------------- */
+
+Status GraphModel::read_ops(const Tensor& metadata)
+{
+    Json::Value jsonData;
+    Json::Reader jsonReader;
+    auto stream = metadata.flat<string>().data()[0];
+    auto parse_status = jsonReader.parse(stream, jsonData, false);
+
+    if (parse_status) {
+        for( Json::Value::iterator itr = jsonData.begin() ; itr != jsonData.end() ; itr++ ) {
+            ops.insert({itr.key().asString(), itr->asString()});
+        }
+    } else {
+        auto message = "Could not decode ops";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    }
+    if (ops.find("energy") == ops.end()) {
+        auto message = "The total energy Op is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else if (ops.find("dEdrij") == ops.end()) {
+        auto message = "The radial partial force Op dE/drij is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else if (use_angular && ops.find("dEdrijk") == ops.end()) {
+        auto message = "The angular partial force Op dE/drijk is missing";
+        return Status(tensorflow::error::Code::INTERNAL, message);
+    } else {
+        return Status::OK();
+    }
 }
 
 /* ----------------------------------------------------------------------
@@ -115,13 +243,9 @@ void GraphModel::compute_max_occurs(const int natoms, const int* atom_types)
 void GraphModel::print()
 {
     std::cout << "Graph model <" << filename << "> Metadata" << std::endl;
-    std::cout << "  * rc: " << std::setprecision(3) << rc << std::endl;
+    std::cout << "  * rcut: " << std::setprecision(3) << rcut << std::endl;
+    std::cout << "  * acut: " << std::setprecision(3) << acut << std::endl;
     std::cout << "  * angular: " << use_angular << std::endl;
-    std::cout << "  * n_eta: " << n_eta << std::endl;
-    std::cout << "  * n_omega: " << n_omega << std::endl;
-    std::cout << "  * n_beta: " << n_beta << std::endl;
-    std::cout << "  * n_gamma: " << n_gamma << std::endl;
-    std::cout << "  * n_zeta: " << n_zeta << std::endl;
     std::cout << "  * max_occurs: " << std::endl;
     if (max_occurs_initialized) {
         for (int i = 0; i < n_elements; i++)

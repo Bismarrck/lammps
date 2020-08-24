@@ -33,23 +33,23 @@ VirtualAtomMap::VirtualAtomMap(Memory *pool)
 ------------------------------------------------------------------------- */
 
 void VirtualAtomMap::build(
-        const GraphModel &graph_model,
+        const GraphModel *graph_model,
         const int inum,
         const int *itypes)
 {
-    assert(graph_model.is_initialized());
+    assert(graph_model->is_initialized());
 
     int i;
     int local_index;
     int atom_index;
     int gsl_index;
     int *delta;
-    int n_symbols_vap = graph_model.get_n_elements() + 1;
+    int n_symbols_vap = graph_model->get_n_elements() + 1;
 
     // self.max_vap_n_atoms = sum(max_occurs.values()) + istart
     n_atoms_vap = REAL_ATOM_START;
     for (i = 1; i < n_symbols_vap; i++) {
-        n_atoms_vap += graph_model.get_max_occur(i);
+        n_atoms_vap += graph_model->get_max_occur(i);
     }
 
     // mask = np.zeros(self.max_vap_n_atoms, dtype=bool)
@@ -73,14 +73,14 @@ void VirtualAtomMap::build(
     // self.splits = np.array([1, ] + [max_occurs[e] for e in elements])
     splits[0] = 1;
     for (i = 1; i < n_symbols_vap; i++) {
-        splits[i] = graph_model.get_max_occur(i);
+        splits[i] = graph_model->get_max_occur(i);
     }
 
     // offsets = np.cumsum([max_occurs[e] for e in elements])[:-1]
     // offsets = np.insert(offsets, 0, 0)
     offsets[0] = 1;
     for (i = 1; i < n_symbols_vap; i++) {
-        offsets[i] = offsets[i - 1] + graph_model.get_max_occur(i);
+        offsets[i] = offsets[i - 1] + graph_model->get_max_occur(i);
     }
 
     for (i = 0; i < inum; i++) {
