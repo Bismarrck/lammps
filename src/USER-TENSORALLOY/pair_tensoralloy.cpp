@@ -58,6 +58,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     single_enable = 0;
     one_coeff = 1;
     manybody_flag = 1;
+    nmax = 0;
 
     // Set comm size needed by this Pair
     comm_forward = 0;
@@ -79,10 +80,10 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     row_splits_tensor = nullptr;
     etemp = 0.0;
     serial_mode = true;
+    internal_step = 0;
 
     // Set the variables to their default values
     dynamic_bytes = 0;
-    nmax = -1;
 }
 
 /* ----------------------------------------------------------------------
@@ -198,6 +199,10 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
         nmax = atom->nmax;
     }
 
+    // Update all tensors if needed.
+    vap->build(atom->nlocal, atom->type, false);
+    update_tensors<T>(dtype);
+
     inum = list->inum;
     ilist = list->ilist;
     numneigh = list->numneigh;
@@ -241,6 +246,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
 
     auto rij_tensor = new Tensor(dtype, TensorShape({4, nij_max}));
     auto rij_tensor_mapped = rij_tensor->tensor<T, 2>();
+    rij_tensor_mapped.setConstant(0.0);
 
     auto g2_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
     auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
@@ -307,8 +313,12 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
         error->all(FLERR, "Angular part is not implemented yet!");
     }
 
-    std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
+//    if (vap->updated()) {
+//        std::cout << "before run" << std::endl;
+//        printf("nij=%d, nij_max=%d, ilocal=%d, nnl=%d\n", nij, nij_max, atom->nlocal, nnl_max);
+//    }
 
+    std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
     auto dEdrij = outputs[1].matrix<T>();
     for (nij = 0; nij < nij_max; nij ++) {
         double rij = rij_tensor_mapped(0, nij);
@@ -355,11 +365,15 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
 
     dynamic_bytes = 0;
     dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
+    dynamic_bytes += rij_tensor->TotalBytes();
+    dynamic_bytes += vap->memory_usage();
 
     delete g2_v2gmap_tensor;
     delete rij_tensor;
     delete [] ivec;
     delete [] jvec;
+
+    internal_step += 1;
 }
 
 
@@ -377,7 +391,96 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 }
 
 /* ----------------------------------------------------------------------
-   allocate pair_style arrays
+   Update tensors. Some may be reallocated.
+------------------------------------------------------------------------- */
+
+template <typename T>
+void PairTensorAlloy::update_tensors(DataType dtype)
+{
+    int i, j;
+    int n = atom->ntypes + 1;
+
+    if (!vap->updated()) {
+        return;
+    }
+
+    int n_atoms_vap = vap->get_n_atoms_vap();
+
+    // Radial interaction counters
+    memory->grow(radial_counters, n_atoms_vap, n, "pair:ta:rcount");
+    for (i = 0; i < n_atoms_vap; i++) {
+        for (j = 0; j < n; j++) {
+            radial_counters[i][j] = 0;
+        }
+    }
+
+    // Positions
+    if (R_tensor) {
+        delete R_tensor;
+        R_tensor = nullptr;
+    }
+    R_tensor = new Tensor(dtype, TensorShape({n_atoms_vap, 3}));
+    R_tensor->tensor<T, 2>().setConstant(0.f);
+
+    // row splits tensor
+    if (row_splits_tensor) {
+        delete row_splits_tensor;
+        row_splits_tensor = nullptr;
+    }
+    row_splits_tensor = new Tensor(DT_INT32, TensorShape({n}));
+    row_splits_tensor->tensor<int32, 1>().setConstant(0);
+    for (i = 0; i < n; i++) {
+        row_splits_tensor->tensor<int32, 1>()(i) = vap->get_row_splits()[i];
+    }
+
+    // Atom masks tensor
+    if (atom_mask_tensor) {
+        delete atom_mask_tensor;
+        atom_mask_tensor = nullptr;
+    }
+    atom_mask_tensor = new Tensor(dtype, TensorShape({n_atoms_vap}));
+    auto atom_mask_ptr = vap->get_atom_masks();
+    for (i = 0; i < n_atoms_vap; i++) {
+        atom_mask_tensor->tensor<T, 1>()(i) = static_cast<T>(atom_mask_ptr[i]);
+    }
+
+    // N_atom_vap tensor
+    if (n_atoms_vap_tensor == nullptr) {
+        n_atoms_vap_tensor = new Tensor(DT_INT32, TensorShape());
+    }
+    n_atoms_vap_tensor->flat<int32>()(0) = n_atoms_vap;
+
+    // nnl_max tensor
+    if (nnl_max_tensor == nullptr) {
+        nnl_max_tensor = new Tensor(DT_INT32, TensorShape());
+    }
+
+    // Pulay stress tensor
+    if (pulay_stress_tensor == nullptr) {
+        pulay_stress_tensor = new Tensor(dtype, TensorShape());
+        pulay_stress_tensor->flat<T>()(0) = 0.0f;
+    }
+
+    // electron temperature tensor
+    if (etemperature_tensor == nullptr) {
+        etemperature_tensor = new Tensor(dtype, TensorShape());
+        etemperature_tensor->flat<T>()(0) = etemp;
+    }
+
+    // Volume
+    if (volume_tensor == nullptr) {
+        volume_tensor = new Tensor(dtype, TensorShape());
+    }
+
+    // Lattice
+    if (h_tensor == nullptr) {
+        h_tensor = new Tensor(dtype, TensorShape({3, 3}));
+        h_tensor->tensor<T, 2>().setConstant(0.f);
+    }
+}
+
+/* ----------------------------------------------------------------------
+   Allocate arrays
 ------------------------------------------------------------------------- */
 
 template <typename T>
@@ -389,30 +492,23 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
 
     allocated = 1;
 
-    // ntypes: the number of atom types
-    // N: the number of atom types plus one because `atom->type[i] >= 1`.
-    // model: the atom types read from the graph model.
-    // lmp: the atom types read from LAMMPS input (data) file.
-    int model_ntypes = graph_model->get_n_elements();
-    int model_N = model_ntypes + 1;
-    int lmp_ntypes = atom->ntypes;
-    int lmp_N = lmp_ntypes + 1;
+    int n = atom->ntypes + 1;
     int i, j;
 
-    memory->create(cutsq, lmp_N, lmp_N, "pair:cutsq");
-    memory->create(setflag, lmp_N, lmp_N, "pair:setflag");
-    for (i = 1; i < lmp_N; i++) {
-        for (j = i; j < lmp_N; j++) {
+    memory->create(cutsq, n, n, "pair:cutsq");
+    memory->create(setflag, n, n, "pair:setflag");
+    for (i = 1; i < n; i++) {
+        for (j = i; j < n; j++) {
             setflag[i][j] = 0;
         }
     }
 
     // Radial interactions
-    memory->create(radial_interactions, lmp_N, lmp_N, "pair:ta:radial");
-    for (i = 1; i < lmp_N; i++) {
+    memory->create(radial_interactions, n, n, "pair:ta:radial");
+    for (i = 1; i < n; i++) {
         radial_interactions[i][i] = 0;
         int val = 1;
-        for (j = 1; j < lmp_N; j++) {
+        for (j = 1; j < n; j++) {
             if (j != i) {
                 radial_interactions[i][j] = val;
                 val ++;
@@ -420,53 +516,7 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
         }
     }
 
-    // Radial interaction counters
-    memory->create(radial_counters, vap->get_n_atoms_vap(), lmp_N, "pair:ta:rcount");
-    for (i = 0; i < vap->get_n_atoms_vap(); i++) {
-        for (j = 0; j < lmp_N; j++) {
-            radial_counters[i][j] = 0;
-        }
-    }
-
-    // Lattice
-    h_tensor = new Tensor(dtype, TensorShape({3, 3}));
-    h_tensor->tensor<T, 2>().setConstant(0.f);
-
-    // Positions
-    R_tensor = new Tensor(dtype, TensorShape({vap->get_n_atoms_vap(), 3}));
-    R_tensor->tensor<T, 2>().setConstant(0.f);
-
-    // Volume
-    volume_tensor = new Tensor(dtype, TensorShape());
-
-    // row splits tensor
-    row_splits_tensor = new Tensor(DT_INT32, TensorShape({model_N}));
-    row_splits_tensor->tensor<int32, 1>().setConstant(0);
-    for (i = 0; i < model_N; i++) {
-        row_splits_tensor->tensor<int32, 1>()(i) = vap->get_row_splits()[i];
-    }
-
-    // Atom masks tensor
-    atom_mask_tensor = new Tensor(dtype, TensorShape({vap->get_n_atoms_vap()}));
-    auto atom_mask_ptr = vap->get_atom_masks();
-    for (i = 0; i < vap->get_n_atoms_vap(); i++) {
-        atom_mask_tensor->tensor<T, 1>()(i) = static_cast<T>(atom_mask_ptr[i]);
-    }
-
-    // N_atom_vap tensor
-    n_atoms_vap_tensor = new Tensor(DT_INT32, TensorShape());
-    n_atoms_vap_tensor->flat<int32>()(0) = vap->get_n_atoms_vap();
-
-    // nnl_max tensor
-    nnl_max_tensor = new Tensor(DT_INT32, TensorShape());
-
-    // Pulay stress tensor
-    pulay_stress_tensor = new Tensor(dtype, TensorShape());
-    pulay_stress_tensor->flat<T>()(0) = 0.0f;
-
-    // electron temperature tensor
-    etemperature_tensor = new Tensor(dtype, TensorShape());
-    etemperature_tensor->flat<T>()(0) = 0.0f;
+    update_tensors<T>(dtype);
 }
 
 void PairTensorAlloy::allocate()
@@ -527,16 +577,6 @@ void PairTensorAlloy::coeff(int narg, char **arg)
         idx ++;
     }
 
-//    volatile int lldb = 0;
-//    char hostname[256];
-//    gethostname(hostname, sizeof(hostname));
-//    printf("PID %d on %s ready for attach\n", getpid(), hostname);
-//    fflush(stdout);
-//    while (lldb < 10) {
-//        sleep(5);
-//        lldb += 5;
-//    }
-
     // Load the graph model
     graph_model = new GraphModel(
             string(arg[0]),
@@ -544,11 +584,10 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             error,
             serial_mode,
             comm->me == 0);
-    graph_model->compute_max_occurs(atom->nlocal, atom->type);
 
     // Initialize the Virtual-Atom Map
-    vap = new VirtualAtomMap(memory);
-    vap->build(graph_model, atom->nlocal, atom->type);
+    vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
+    vap->build(atom->nlocal, atom->type, false);
 
     if (comm->me == 0) {
         std::cout << "VAP initialized." << std::endl;

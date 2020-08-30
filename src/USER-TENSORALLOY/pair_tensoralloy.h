@@ -54,6 +54,7 @@ namespace LAMMPS_NS {
         template <typename T> double update_cell ();
         template <typename T> void run(int eflag, int vflag, DataType dtype);
         template <typename T> void allocate_with_dtype(DataType dtype);
+        template <typename T> void update_tensors(DataType dtype);
 
         /*
          * Return the atom index in the local frame.
@@ -69,6 +70,7 @@ namespace LAMMPS_NS {
 
     private:
 
+        int internal_step;
         bool serial_mode;
 
         // Electron temperature (eV)

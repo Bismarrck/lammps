@@ -31,7 +31,6 @@ GraphModel::GraphModel(
         bool serial_mode,
         bool verbose)
 {
-    max_occurs_initialized = false;
     decoded = false;
     filename = graph_model_path;
     rcut = 0.0;
@@ -48,11 +47,11 @@ GraphModel::GraphModel(
     Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
     if (!status.ok()) {
         auto message = "Decode graph model error: " + status.ToString();
-        error->all(FLERR, message.c_str());
+        error->all(FLERR, message);
     }
     status = read_transformer_params(outputs[0], graph_model_path, symbols);
     if (!status.ok()) {
-        error->all(FLERR, status.error_message().c_str());
+        error->all(FLERR, status.error_message());
     }
 
     outputs.clear();
@@ -70,11 +69,11 @@ GraphModel::GraphModel(
     status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
     if (!status.ok()) {
         auto message = "Decode graph model error: " + status.ToString();
-        error->all(FLERR, message.c_str());
+        error->all(FLERR, message);
     }
     status = read_ops(outputs[0]);
     if (!status.ok()) {
-        error->all(FLERR, status.error_message().c_str());
+        error->all(FLERR, status.error_message());
     }
 
     decoded = true;
@@ -105,7 +104,7 @@ std::vector<Tensor> GraphModel::run(
     Status status = session->Run(feed_dict, run_ops, {}, &outputs);
     if (!status.ok()) {
         auto message = "TensorAlloy internal error: " + status.ToString();
-        error->all(FLERR, message.c_str());
+        error->all(FLERR, message);
     }
     return outputs;
 }
@@ -216,27 +215,6 @@ Status GraphModel::read_ops(const Tensor& metadata)
 }
 
 /* ----------------------------------------------------------------------
-   Compute `max_occurs`.
-------------------------------------------------------------------------- */
-
-void GraphModel::compute_max_occurs(const int natoms, const int* atom_types)
-{
-    int size = n_elements + 1;
-    for (int i = 0; i < size; i++) {
-        max_occurs.push_back(0);
-    }
-    for (int i = 0; i < natoms; i++) {
-        max_occurs[atom_types[i]] += 1;
-    }
-    for (int i = 1; i < size; i++) {
-        if (max_occurs[i] == 0) {
-            max_occurs[i] = 1;
-        }
-    }
-    max_occurs_initialized = true;
-}
-
-/* ----------------------------------------------------------------------
    Print the details of the loaded graph model.
 ------------------------------------------------------------------------- */
 
@@ -247,8 +225,4 @@ void GraphModel::print()
     std::cout << "  * acut: " << std::setprecision(3) << acut << std::endl;
     std::cout << "  * angular: " << use_angular << std::endl;
     std::cout << "  * max_occurs: " << std::endl;
-    if (max_occurs_initialized) {
-        for (int i = 0; i < n_elements; i++)
-            printf("    %2s: %4d\n", symbols[i].c_str(), max_occurs[i]);
-    }
 }

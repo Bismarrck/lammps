@@ -30,22 +30,18 @@ namespace LAMMPS_NS {
 
         ~GraphModel();
 
-        bool is_initialized() const { return decoded && max_occurs_initialized; }
         int get_n_elements() const { return n_elements; }
         bool angular() const { return use_angular; }
         bool use_fp64() const { return fp64; }
         double get_cutoff(bool angular=false) const { return angular ? acut : rcut; }
-        unsigned int get_max_occur(int index) const { return max_occurs[index]; }
 
         std::unique_ptr<tensorflow::Session> session;
 
-        void compute_max_occurs(int natoms, const int* atom_types);
         void print();
 
         std::vector<Tensor> run(const std::vector<std::pair<string, Tensor>> &, Error *);
 
     protected:
-        std::vector<unsigned int> max_occurs;
         bool use_angular;
         double rcut;
         double acut;
@@ -59,9 +55,7 @@ namespace LAMMPS_NS {
         Status read_ops(const Tensor&);
 
         bool fp64;
-
         bool decoded;
-        bool max_occurs_initialized;
     };
 }
 
