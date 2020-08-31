@@ -46,32 +46,18 @@ namespace LAMMPS_NS {
         GraphModel *graph_model;
         double cutforcesq, cutmax;
 
-        int32 **radial_interactions;
-        int32 **radial_counters;
-
+        int32 **ijtypes;
+        int32 **ijnums;
         VirtualAtomMap *vap;
 
         template <typename T> double update_cell ();
         template <typename T> void run(int eflag, int vflag, DataType dtype);
-        template <typename T> void allocate_with_dtype(DataType dtype);
+        template <typename T> void allocate(DataType dtype);
         template <typename T> void update_tensors(DataType dtype);
-
-        /*
-         * Return the atom index in the local frame.
-         * vap->get_index_map()[local_idx] will map the local index to VAP index.
-         * */
-        int inline get_local_idx(const unsigned int i) {
-            return atom->tag[i] - 1;
-        }
-
-        // Original Pair variables
-        int nmax;
-        void allocate();
 
     private:
 
-        int internal_step;
-        bool serial_mode;
+        bool use_hyper_thread;
 
         // Electron temperature (eV)
         double etemp;

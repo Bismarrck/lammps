@@ -39,8 +39,7 @@ VirtualAtomMap::VirtualAtomMap(Memory *pool, int n_elements_)
 
 void VirtualAtomMap::build(
         const int nlocal,
-        const int *itypes,
-        bool force_rebuild)
+        const int *itypes)
 {
     int i;
     int local_index;
@@ -51,9 +50,6 @@ void VirtualAtomMap::build(
 
     // Build `max_occurs`
     is_domain_changed = build_max_occurs(nlocal, itypes);
-    if (force_rebuild) {
-        is_domain_changed = true;
-    }
     if (!is_domain_changed) {
         return;
     }

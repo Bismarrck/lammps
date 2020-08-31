@@ -115,7 +115,7 @@ std::vector<Tensor> GraphModel::run(
 
 // Reads a model graph definition from disk, and creates a session object you
 // can use to run it.
-Status GraphModel::load_graph(const string &graph_file_name, bool serial_mode) {
+Status GraphModel::load_graph(const string &graph_file_name, bool use_hyper_thread) {
     tensorflow::GraphDef graph_def;
     Status load_graph_status =
             ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
@@ -128,11 +128,12 @@ Status GraphModel::load_graph(const string &graph_file_name, bool serial_mode) {
     tensorflow::SessionOptions options;
     options.config.set_allow_soft_placement(true);
     options.config.set_log_device_placement(false);
-
-    if (serial_mode) {
+    if (use_hyper_thread) {
+        options.config.set_inter_op_parallelism_threads(2);
+    } else {
         options.config.set_inter_op_parallelism_threads(1);
-        options.config.set_intra_op_parallelism_threads(1);
     }
+    options.config.set_intra_op_parallelism_threads(1);
 
     session.reset(tensorflow::NewSession(options));
     Status session_create_status = session->Create(graph_def);

@@ -54,19 +54,15 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     restartinfo = 0;
     cutmax = 0.0;
     cutforcesq = 0.0;
-
     single_enable = 0;
     one_coeff = 1;
     manybody_flag = 1;
-    nmax = 0;
-
-    // Set comm size needed by this Pair
     comm_forward = 0;
     comm_reverse = 0;
 
     // Internal variables and pointers
-    radial_interactions = nullptr;
-    radial_counters = nullptr;
+    ijtypes = nullptr;
+    ijnums = nullptr;
     vap = nullptr;
     graph_model = nullptr;
     R_tensor = nullptr;
@@ -79,10 +75,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     nnl_max_tensor = nullptr;
     row_splits_tensor = nullptr;
     etemp = 0.0;
-    serial_mode = true;
-    internal_step = 0;
-
-    // Set the variables to their default values
+    use_hyper_thread = false;
     dynamic_bytes = 0;
 }
 
@@ -95,8 +88,8 @@ PairTensorAlloy::~PairTensorAlloy()
     if (allocated) {
         memory->destroy(setflag);
         memory->destroy(cutsq);
-        memory->destroy(radial_interactions);
-        memory->destroy(radial_counters);
+        memory->destroy(ijtypes);
+        memory->destroy(ijnums);
 
         delete R_tensor;
         R_tensor = nullptr;
@@ -191,16 +184,11 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     int newton_pair;
     const int32 *local_to_vap_map, *vap_to_local_map;
 
+    // Initialze the flags
     ev_init(eflag, vflag);
 
-    // grow local arrays if necessary
-    // need to be atom->nmax in length
-    if (atom->nmax > nmax) {
-        nmax = atom->nmax;
-    }
-
     // Update all tensors if needed.
-    vap->build(atom->nlocal, atom->type, false);
+    vap->build(atom->nlocal, atom->type);
     update_tensors<T>(dtype);
 
     inum = list->inum;
@@ -223,11 +211,14 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     R_tensor_mapped.setConstant(0.0f);
 
     // Determine nij_max
+    // Lammps adds an extra `skin` to `cutoff`, so `nij_max` should be adjusted
+    double neigh_coef = pow(cutmax / (neighbor->skin + cutmax), 3.0) + 0.05;
     nij_max = 0;
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
         nij_max += numneigh[i];
     }
+    nij_max = static_cast<int>(nij_max * neigh_coef);
 
     ivec = new int[nij_max];
     jvec = new int[nij_max];
@@ -240,7 +231,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     // Reset the counters
     for (i = 0; i < vap->get_n_atoms_vap(); i++) {
         for (j = 0; j < atom->ntypes + 1; j++) {
-            radial_counters[i][j] = 0;
+            ijnums[i][j] = 0;
         }
     }
 
@@ -277,8 +268,8 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
                 ivec[nij] = i;
                 jvec[nij] = j;
 
-                ijtype = radial_interactions[itype][jtype];
-                inc = radial_counters[local_to_vap_map[i]][ijtype];
+                ijtype = ijtypes[itype][jtype];
+                inc = ijnums[local_to_vap_map[i]][ijtype];
                 nnl_max = MAX(inc + 1, nnl_max);
 
                 g2_v2gmap_tensor_mapped(nij, 0) = ijtype;
@@ -287,7 +278,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
                 g2_v2gmap_tensor_mapped(nij, 3) = 0;
                 g2_v2gmap_tensor_mapped(nij, 4) = 1;
                 nij += 1;
-                radial_counters[local_to_vap_map[i]][ijtype] += 1;
+                ijnums[local_to_vap_map[i]][ijtype] += 1;
             }
         }
     }
@@ -312,11 +303,6 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     if (graph_model->angular()) {
         error->all(FLERR, "Angular part is not implemented yet!");
     }
-
-//    if (vap->updated()) {
-//        std::cout << "before run" << std::endl;
-//        printf("nij=%d, nij_max=%d, ilocal=%d, nnl=%d\n", nij, nij_max, atom->nlocal, nnl_max);
-//    }
 
     std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
     auto dEdrij = outputs[1].matrix<T>();
@@ -372,8 +358,6 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     delete rij_tensor;
     delete [] ivec;
     delete [] jvec;
-
-    internal_step += 1;
 }
 
 
@@ -407,10 +391,10 @@ void PairTensorAlloy::update_tensors(DataType dtype)
     int n_atoms_vap = vap->get_n_atoms_vap();
 
     // Radial interaction counters
-    memory->grow(radial_counters, n_atoms_vap, n, "pair:ta:rcount");
+    memory->grow(ijnums, n_atoms_vap, n, "pair:ta:rcount");
     for (i = 0; i < n_atoms_vap; i++) {
         for (j = 0; j < n; j++) {
-            radial_counters[i][j] = 0;
+            ijnums[i][j] = 0;
         }
     }
 
@@ -484,7 +468,7 @@ void PairTensorAlloy::update_tensors(DataType dtype)
 ------------------------------------------------------------------------- */
 
 template <typename T>
-void PairTensorAlloy::allocate_with_dtype(DataType dtype)
+void PairTensorAlloy::allocate(DataType dtype)
 {
     if (vap == nullptr) {
         error->all(FLERR, "VAP is not succesfully initialized.");
@@ -504,28 +488,19 @@ void PairTensorAlloy::allocate_with_dtype(DataType dtype)
     }
 
     // Radial interactions
-    memory->create(radial_interactions, n, n, "pair:ta:radial");
+    memory->create(ijtypes, n, n, "pair:ta:radial");
     for (i = 1; i < n; i++) {
-        radial_interactions[i][i] = 0;
+        ijtypes[i][i] = 0;
         int val = 1;
         for (j = 1; j < n; j++) {
             if (j != i) {
-                radial_interactions[i][j] = val;
+                ijtypes[i][j] = val;
                 val ++;
             }
         }
     }
 
     update_tensors<T>(dtype);
-}
-
-void PairTensorAlloy::allocate()
-{
-    if (graph_model->use_fp64()) {
-        allocate_with_dtype<double>(DataType::DT_DOUBLE);
-    } else {
-        allocate_with_dtype<float>(DataType::DT_FLOAT);
-    }
 }
 
 /* ----------------------------------------------------------------------
@@ -537,8 +512,6 @@ void PairTensorAlloy::settings(int narg, char **/*arg*/)
     if (narg > 0) error->all(FLERR, "Illegal pair_style command");
 }
 
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "cert-err34-c"
 /* ----------------------------------------------------------------------
    The implementation of `pair_coef
 ------------------------------------------------------------------------- */
@@ -551,17 +524,17 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     int idx = 1;
     while (idx < narg) {
         auto iarg = string(arg[idx]);
-        if (iarg == "serial") {
+        if (iarg == "hyper") {
             auto val = string(arg[idx + 1]);
             if (val == "off") {
-                serial_mode = false;
+                use_hyper_thread = false;
             } else if (val == "on") {
-                serial_mode = true;
+                use_hyper_thread = true;
                 if (comm->me == 0) {
-                    std::cout << "Serial mode is enabled" << std::endl;
+                    std::cout << "Hyper thread mode is enabled" << std::endl;
                 }
             } else {
-                error->all(FLERR, "'on/off' are available values for key 'serial'");
+                error->all(FLERR, "'on/off' are available values for key 'hyper'");
             }
             idx ++;
         } else if (iarg == "etemp") {
@@ -582,19 +555,23 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             string(arg[0]),
             symbols,
             error,
-            serial_mode,
+            use_hyper_thread,
             comm->me == 0);
 
     // Initialize the Virtual-Atom Map
     vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
-    vap->build(atom->nlocal, atom->type, false);
+    vap->build(atom->nlocal, atom->type);
 
     if (comm->me == 0) {
         std::cout << "VAP initialized." << std::endl;
     }
 
     // Allocate arrays and tensors.
-    allocate();
+    if (graph_model->use_fp64()) {
+        allocate<double>(DataType::DT_DOUBLE);
+    } else {
+        allocate<float>(DataType::DT_FLOAT);
+    }
 
     // Set atomic masses
     double atom_mass[symbols.size()];
@@ -613,8 +590,6 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     // Set `cutmax`.
     cutmax = graph_model->get_cutoff();
 }
-#pragma clang diagnostic pop
-
 
 /* ----------------------------------------------------------------------
    init specific to this pair style

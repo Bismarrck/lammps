@@ -20,7 +20,7 @@ namespace LAMMPS_NS {
         explicit VirtualAtomMap(Memory *, int);
         ~VirtualAtomMap();
 
-        void build(int, const int *, bool);
+        void build(int, const int *);
 
         const int32 *get_row_splits() const { return splits; }
         const int32 *get_local_to_vap_map() const { return local_to_vap_map; }
