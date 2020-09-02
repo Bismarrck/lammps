@@ -3,10 +3,11 @@
 //
 
 #include <vector>
-#include <iostream>
-#include <iomanip>
 
+#include "utils.h"
 #include "error.h"
+#include "lammps.h"
+#include "fmt/format.h"
 
 #include "jsoncpp/json/json.h"
 #include "graph_model.h"
@@ -25,6 +26,7 @@ using tensorflow::int32;
 ------------------------------------------------------------------------- */
 
 GraphModel::GraphModel(
+        LAMMPS *lammps,
         const string &graph_model_path,
         const std::vector<string>& symbols,
         Error *error,
@@ -37,19 +39,22 @@ GraphModel::GraphModel(
     acut = 0.0;
     use_angular = false;
     n_elements = 0;
+    lmp = lammps;
 
-    Status load_graph_status = load_graph(graph_model_path, serial_mode);
+    Status status = load_graph(graph_model_path, serial_mode);
     if (verbose) {
-        std::cout << "Read " << graph_model_path << ": " << load_graph_status << std::endl;
+        utils::logmesg(
+                lmp,
+                fmt::format("Read {}: {}\n", filename, status.ToString()));
     }
 
     std::vector<Tensor> outputs;
-    Status status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
+    status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
     if (!status.ok()) {
         auto message = "Decode graph model error: " + status.ToString();
         error->all(FLERR, message);
     }
-    status = read_transformer_params(outputs[0], graph_model_path, symbols);
+    status = read_transformer_params(outputs[0], filename, symbols);
     if (!status.ok()) {
         error->all(FLERR, status.error_message());
     }
@@ -59,9 +64,9 @@ GraphModel::GraphModel(
     fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
     if (verbose) {
         if (fp64) {
-            std::cout << "Graph model uses float64" << std::endl;
+            utils::logmesg(lmp, "Graph model uses float64\n");
         } else {
-            std::cout << "Graph model uses float32" << std::endl;
+            utils::logmesg(lmp, "Graph model uses float32\n");
         }
     }
 
@@ -97,7 +102,10 @@ std::vector<Tensor> GraphModel::run(
         Error *error)
 {
     std::vector<Tensor> outputs;
-    std::vector<string> run_ops({ops["free_energy"], ops["dEdrij"], ops["atomic"]});
+    std::vector<string> run_ops({
+        ops["free_energy"],
+        ops["dEdrij"],
+        ops["atomic"]});
     if (use_angular) {
         run_ops.emplace_back(ops["dEdrijk"]);
     }
@@ -115,13 +123,17 @@ std::vector<Tensor> GraphModel::run(
 
 // Reads a model graph definition from disk, and creates a session object you
 // can use to run it.
-Status GraphModel::load_graph(const string &graph_file_name, bool use_hyper_thread) {
+Status GraphModel::load_graph(
+        const string &graph_file_name,
+        bool use_hyper_thread) {
     tensorflow::GraphDef graph_def;
-    Status load_graph_status =
-            ReadBinaryProto(tensorflow::Env::Default(), graph_file_name, &graph_def);
-    if (!load_graph_status.ok()) {
-        return tensorflow::errors::NotFound("Failed to load compute graph at '",
-                                            graph_file_name, "'");
+    Status status = ReadBinaryProto(
+            tensorflow::Env::Default(),
+            graph_file_name,
+            &graph_def);
+    if (!status.ok()) {
+        return tensorflow::errors::NotFound(
+                "Failed to load compute graph at '", graph_file_name, "'");
     }
 
     // Initialize the session
@@ -163,13 +175,13 @@ Status GraphModel::read_transformer_params(
         rcut = jsonData["rcut"].asDouble();
         acut = jsonData["acut"].asDouble();
         use_angular = jsonData["angular"].asBool();
-        Json::Value graph_model_symbols = jsonData["elements"];
-        n_elements = graph_model_symbols.size();
+        Json::Value graph_symbols = jsonData["elements"];
+        n_elements = graph_symbols.size();
 
         auto size = lammps_symbols.size();
         for (int i = 1; i < size; i++) {
-            if (lammps_symbols[i] != graph_model_symbols[i - 1].asString()) {
-                auto message = "Elements mismatch at index " + std::to_string(i);
+            if (lammps_symbols[i] != graph_symbols[i - 1].asString()) {
+                auto message = "Elements mismatch at " + std::to_string(i);
                 return Status(tensorflow::error::Code::INTERNAL, message);
             } else {
                 symbols.push_back(lammps_symbols[i]);
@@ -194,7 +206,8 @@ Status GraphModel::read_ops(const Tensor& metadata)
     auto parse_status = jsonReader.parse(stream, jsonData, false);
 
     if (parse_status) {
-        for( Json::Value::iterator itr = jsonData.begin() ; itr != jsonData.end() ; itr++ ) {
+        Json::Value::iterator itr;
+        for (itr = jsonData.begin(); itr != jsonData.end() ; itr++ ) {
             ops.insert({itr.key().asString(), itr->asString()});
         }
     } else {
@@ -213,17 +226,4 @@ Status GraphModel::read_ops(const Tensor& metadata)
     } else {
         return Status::OK();
     }
-}
-
-/* ----------------------------------------------------------------------
-   Print the details of the loaded graph model.
-------------------------------------------------------------------------- */
-
-void GraphModel::print()
-{
-    std::cout << "Graph model <" << filename << "> Metadata" << std::endl;
-    std::cout << "  * rcut: " << std::setprecision(3) << rcut << std::endl;
-    std::cout << "  * acut: " << std::setprecision(3) << acut << std::endl;
-    std::cout << "  * angular: " << use_angular << std::endl;
-    std::cout << "  * max_occurs: " << std::endl;
 }

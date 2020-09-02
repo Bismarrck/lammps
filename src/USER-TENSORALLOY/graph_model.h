@@ -22,6 +22,7 @@ namespace LAMMPS_NS {
 
     public:
         GraphModel(
+                LAMMPS *lammps,
                 const string& graph_model_path,
                 const std::vector<string>& symbols,
                 Error *error,
@@ -33,25 +34,30 @@ namespace LAMMPS_NS {
         int get_n_elements() const { return n_elements; }
         bool angular() const { return use_angular; }
         bool use_fp64() const { return fp64; }
-        double get_cutoff(bool angular=false) const { return angular ? acut : rcut; }
+        double get_cutoff(bool angular=false) const {
+            return angular ? acut : rcut;
+        }
 
-        std::unique_ptr<tensorflow::Session> session;
-
-        void print();
-
-        std::vector<Tensor> run(const std::vector<std::pair<string, Tensor>> &, Error *);
+        std::vector<Tensor> run(
+                const std::vector<std::pair<string, Tensor>> &,
+                Error *);
 
     protected:
         bool use_angular;
         double rcut;
         double acut;
         int n_elements;
+        LAMMPS *lmp;
         std::vector<string> symbols;
         string filename;
         std::map<string, string> ops;
+        std::unique_ptr<tensorflow::Session> session;
 
         Status load_graph(const string& filename, bool serial_mode);
-        Status read_transformer_params(const Tensor&, const string&, const std::vector<string>&);
+        Status read_transformer_params(
+                const Tensor&,
+                const string&,
+                const std::vector<string>&);
         Status read_ops(const Tensor&);
 
         bool fp64;

@@ -17,7 +17,6 @@
 #include <cmath>
 #include <vector>
 #include <map>
-#include <iostream>
 #include <domain.h>
 #include "force.h"
 #include "comm.h"
@@ -25,6 +24,8 @@
 #include "neigh_list.h"
 #include "neigh_request.h"
 #include "error.h"
+#include "utils.h"
+#include "fmt/format.h"
 #include "tensorflow/cc/framework/ops.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -65,15 +66,15 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp)
     ijnums = nullptr;
     vap = nullptr;
     graph_model = nullptr;
-    R_tensor = nullptr;
-    h_tensor = nullptr;
-    volume_tensor = nullptr;
+    positions = nullptr;
+    cell = nullptr;
+    volume = nullptr;
     n_atoms_vap_tensor = nullptr;
-    atom_mask_tensor = nullptr;
-    pulay_stress_tensor = nullptr;
-    etemperature_tensor = nullptr;
-    nnl_max_tensor = nullptr;
-    row_splits_tensor = nullptr;
+    atom_masks = nullptr;
+    pulay_stress = nullptr;
+    etemperature = nullptr;
+    nnl_max = nullptr;
+    row_splits = nullptr;
     etemp = 0.0;
     use_hyper_thread = false;
     dynamic_bytes = 0;
@@ -91,32 +92,32 @@ PairTensorAlloy::~PairTensorAlloy()
         memory->destroy(ijtypes);
         memory->destroy(ijnums);
 
-        delete R_tensor;
-        R_tensor = nullptr;
+        delete positions;
+        positions = nullptr;
 
-        delete h_tensor;
-        h_tensor = nullptr;
+        delete cell;
+        cell = nullptr;
 
-        delete volume_tensor;
-        volume_tensor = nullptr;
+        delete volume;
+        volume = nullptr;
 
         delete n_atoms_vap_tensor;
         n_atoms_vap_tensor = nullptr;
 
-        delete nnl_max_tensor;
-        nnl_max_tensor = nullptr;
+        delete nnl_max;
+        nnl_max = nullptr;
 
-        delete pulay_stress_tensor;
-        pulay_stress_tensor = nullptr;
+        delete pulay_stress;
+        pulay_stress = nullptr;
 
-        delete etemperature_tensor;
-        etemperature_tensor = nullptr;
+        delete etemperature;
+        etemperature = nullptr;
 
-        delete atom_mask_tensor;
-        atom_mask_tensor = nullptr;
+        delete atom_masks;
+        atom_masks = nullptr;
 
-        delete row_splits_tensor;
-        row_splits_tensor = nullptr;
+        delete row_splits;
+        row_splits = nullptr;
     }
 
     if (vap) {
@@ -139,26 +140,26 @@ PairTensorAlloy::~PairTensorAlloy()
 template <typename T>
 double PairTensorAlloy::update_cell()
 {
-    auto h_mapped = h_tensor->template tensor<T, 2>();
-    h_mapped(0, 0) = static_cast<T> (domain->h[0]);
-    h_mapped(0, 1) = static_cast<T> (0.0);
-    h_mapped(0, 2) = static_cast<T> (0.0);
-    h_mapped(1, 0) = static_cast<T> (domain->h[5]);
-    h_mapped(1, 1) = static_cast<T> (domain->h[1]);
-    h_mapped(1, 2) = static_cast<T> (0.0);
-    h_mapped(2, 0) = static_cast<T> (domain->h[4]);
-    h_mapped(2, 1) = static_cast<T> (domain->h[3]);
-    h_mapped(2, 2) = static_cast<T> (domain->h[2]);
+    auto cell_ = cell->template tensor<T, 2>();
+    cell_(0, 0) = static_cast<T> (domain->h[0]);
+    cell_(0, 1) = static_cast<T> (0.0);
+    cell_(0, 2) = static_cast<T> (0.0);
+    cell_(1, 0) = static_cast<T> (domain->h[5]);
+    cell_(1, 1) = static_cast<T> (domain->h[1]);
+    cell_(1, 2) = static_cast<T> (0.0);
+    cell_(2, 0) = static_cast<T> (domain->h[4]);
+    cell_(2, 1) = static_cast<T> (domain->h[3]);
+    cell_(2, 2) = static_cast<T> (domain->h[2]);
 
     // Compute the volume.
-    double volume;
+    double vol;
     if (domain->dimension == 3) {
-        volume = domain->xprd * domain->yprd * domain->zprd;
+        vol = domain->xprd * domain->yprd * domain->zprd;
     }
     else {
-        volume = domain->xprd * domain->yprd;
+        vol = domain->xprd * domain->yprd;
     }
-    return volume;
+    return vol;
 }
 
 /* ----------------------------------------------------------------------
@@ -171,13 +172,11 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     int i, j;
     int ii, jj, inum, jnum, itype, jtype;
     int ijtype;
-    int nij_max;
-    int nij;
-    int nnl_max = 0;
+    int nij, nij_max;
+    int nnl;
     int inc;
     double rsq;
     double rijx, rijy, rijz;
-    double volume;
     double fx, fy, fz;
     int *ilist, *jlist, *numneigh, **firstneigh;
     int *ivec, *jvec;
@@ -199,16 +198,11 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     local_to_vap_map = vap->get_local_to_vap_map();
     vap_to_local_map = vap->get_vap_to_local_map();
 
-    // Cell
-    volume = update_cell<T>();
-    auto h_tensor_matrix = h_tensor->matrix<T>();
-
-    // Volume
-    volume_tensor->flat<T>()(0) = DOUBLE(volume);
+    // Cell and volume
+    volume->flat<T>()(0) = DOUBLE(update_cell<T>());
 
     // Positions: will be removed later
-    auto R_tensor_mapped = R_tensor->tensor<T, 2>();
-    R_tensor_mapped.setConstant(0.0f);
+    positions->tensor<T, 2>().setConstant(0.0f);
 
     // Determine nij_max
     // Lammps adds an extra `skin` to `cutoff`, so `nij_max` should be adjusted
@@ -219,7 +213,6 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
         nij_max += numneigh[i];
     }
     nij_max = static_cast<int>(nij_max * neigh_coef);
-
     ivec = new int[nij_max];
     jvec = new int[nij_max];
     for (nij = 0; nij < nij_max; nij ++) {
@@ -235,13 +228,13 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
         }
     }
 
-    auto rij_tensor = new Tensor(dtype, TensorShape({4, nij_max}));
-    auto rij_tensor_mapped = rij_tensor->tensor<T, 2>();
-    rij_tensor_mapped.setConstant(0.0);
+    auto rdists = new Tensor(dtype, TensorShape({4, nij_max}));
+    auto rdists_ = rdists->tensor<T, 2>();
+    rdists_.setConstant(0.0);
 
-    auto g2_v2gmap_tensor = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
-    auto g2_v2gmap_tensor_mapped = g2_v2gmap_tensor->tensor<int32, 2>();
-    g2_v2gmap_tensor_mapped.setConstant(0);
+    auto rmap = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
+    auto rmap_ = rmap->tensor<int32, 2>();
+    rmap_.setConstant(0);
 
     for (ii = 0; ii < inum; ii++) {
         i = ilist[ii];
@@ -261,22 +254,22 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
             if (rsq < cutforcesq) {
                 jtype = atom->type[j];
 
-                rij_tensor_mapped(0, nij) = DOUBLE(sqrt(rsq));
-                rij_tensor_mapped(1, nij) = DOUBLE(rijx);
-                rij_tensor_mapped(2, nij) = DOUBLE(rijy);
-                rij_tensor_mapped(3, nij) = DOUBLE(rijz);
+                rdists_(0, nij) = DOUBLE(sqrt(rsq));
+                rdists_(1, nij) = DOUBLE(rijx);
+                rdists_(2, nij) = DOUBLE(rijy);
+                rdists_(3, nij) = DOUBLE(rijz);
                 ivec[nij] = i;
                 jvec[nij] = j;
 
                 ijtype = ijtypes[itype][jtype];
                 inc = ijnums[local_to_vap_map[i]][ijtype];
-                nnl_max = MAX(inc + 1, nnl_max);
+                nnl = MAX(inc + 1, nnl);
 
-                g2_v2gmap_tensor_mapped(nij, 0) = ijtype;
-                g2_v2gmap_tensor_mapped(nij, 1) = local_to_vap_map[i];
-                g2_v2gmap_tensor_mapped(nij, 2) = inc;
-                g2_v2gmap_tensor_mapped(nij, 3) = 0;
-                g2_v2gmap_tensor_mapped(nij, 4) = 1;
+                rmap_(nij, 0) = ijtype;
+                rmap_(nij, 1) = local_to_vap_map[i];
+                rmap_(nij, 2) = inc;
+                rmap_(nij, 3) = 0;
+                rmap_(nij, 4) = 1;
                 nij += 1;
                 ijnums[local_to_vap_map[i]][ijtype] += 1;
             }
@@ -284,20 +277,20 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     }
 
     // Set the nnl_max
-    nnl_max_tensor->flat<int32>()(0) = static_cast<int32> (nnl_max + 1);
+    nnl_max->flat<int32>()(0) = nnl + 1;
 
     std::vector<std::pair<string, Tensor>> feed_dict({
-        {"Placeholders/positions", *R_tensor},
+        {"Placeholders/positions", *positions},
         {"Placeholders/n_atoms_vap", *n_atoms_vap_tensor},
-        {"Placeholders/nnl_max", *nnl_max_tensor},
-        {"Placeholders/atom_masks", *atom_mask_tensor},
-        {"Placeholders/cell", *h_tensor},
-        {"Placeholders/volume", *volume_tensor},
-        {"Placeholders/pulay_stress", *pulay_stress_tensor},
-        {"Placeholders/etemperature", *etemperature_tensor},
-        {"Placeholders/row_splits", *row_splits_tensor},
-        {"Placeholders/g2.v2g_map", *g2_v2gmap_tensor},
-        {"Placeholders/g2.rij", *rij_tensor},
+        {"Placeholders/nnl_max", *nnl_max},
+        {"Placeholders/atom_masks", *atom_masks},
+        {"Placeholders/cell", *cell},
+        {"Placeholders/volume", *volume},
+        {"Placeholders/pulay_stress", *pulay_stress},
+        {"Placeholders/etemperature", *etemperature},
+        {"Placeholders/row_splits", *row_splits},
+        {"Placeholders/g2.v2g_map", *rmap},
+        {"Placeholders/g2.rij", *rdists},
     });
 
     if (graph_model->angular()) {
@@ -307,7 +300,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
     auto dEdrij = outputs[1].matrix<T>();
     for (nij = 0; nij < nij_max; nij ++) {
-        double rij = rij_tensor_mapped(0, nij);
+        double rij = rdists_(0, nij);
         if (std::abs(rij) < 1e-6) {
             rijx = 0;
             rijy = 0;
@@ -316,9 +309,9 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
             fy = 0;
             fz = 0;
         } else {
-            rijx = rij_tensor_mapped(1, nij);
-            rijy = rij_tensor_mapped(2, nij);
-            rijz = rij_tensor_mapped(3, nij);
+            rijx = rdists_(1, nij);
+            rijy = rdists_(2, nij);
+            rijz = rdists_(3, nij);
             fx = dEdrij(0, nij) * rijx / rij + dEdrij(1, nij);
             fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
             fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
@@ -350,12 +343,12 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype)
     }
 
     dynamic_bytes = 0;
-    dynamic_bytes += g2_v2gmap_tensor->TotalBytes();
-    dynamic_bytes += rij_tensor->TotalBytes();
+    dynamic_bytes += rmap->TotalBytes();
+    dynamic_bytes += rdists->TotalBytes();
     dynamic_bytes += vap->memory_usage();
 
-    delete g2_v2gmap_tensor;
-    delete rij_tensor;
+    delete rmap;
+    delete rdists;
     delete [] ivec;
     delete [] jvec;
 }
@@ -399,33 +392,33 @@ void PairTensorAlloy::update_tensors(DataType dtype)
     }
 
     // Positions
-    if (R_tensor) {
-        delete R_tensor;
-        R_tensor = nullptr;
+    if (positions) {
+        delete positions;
+        positions = nullptr;
     }
-    R_tensor = new Tensor(dtype, TensorShape({n_atoms_vap, 3}));
-    R_tensor->tensor<T, 2>().setConstant(0.f);
+    positions = new Tensor(dtype, TensorShape({n_atoms_vap, 3}));
+    positions->tensor<T, 2>().setConstant(0.f);
 
     // row splits tensor
-    if (row_splits_tensor) {
-        delete row_splits_tensor;
-        row_splits_tensor = nullptr;
+    if (row_splits) {
+        delete row_splits;
+        row_splits = nullptr;
     }
-    row_splits_tensor = new Tensor(DT_INT32, TensorShape({n}));
-    row_splits_tensor->tensor<int32, 1>().setConstant(0);
+    row_splits = new Tensor(DT_INT32, TensorShape({n}));
+    row_splits->tensor<int32, 1>().setConstant(0);
     for (i = 0; i < n; i++) {
-        row_splits_tensor->tensor<int32, 1>()(i) = vap->get_row_splits()[i];
+        row_splits->tensor<int32, 1>()(i) = vap->get_row_splits()[i];
     }
 
     // Atom masks tensor
-    if (atom_mask_tensor) {
-        delete atom_mask_tensor;
-        atom_mask_tensor = nullptr;
+    if (atom_masks) {
+        delete atom_masks;
+        atom_masks = nullptr;
     }
-    atom_mask_tensor = new Tensor(dtype, TensorShape({n_atoms_vap}));
-    auto atom_mask_ptr = vap->get_atom_masks();
+    atom_masks = new Tensor(dtype, TensorShape({n_atoms_vap}));
+    auto masks = vap->get_atom_masks();
     for (i = 0; i < n_atoms_vap; i++) {
-        atom_mask_tensor->tensor<T, 1>()(i) = static_cast<T>(atom_mask_ptr[i]);
+        atom_masks->tensor<T, 1>()(i) = static_cast<T>(masks[i]);
     }
 
     // N_atom_vap tensor
@@ -435,31 +428,31 @@ void PairTensorAlloy::update_tensors(DataType dtype)
     n_atoms_vap_tensor->flat<int32>()(0) = n_atoms_vap;
 
     // nnl_max tensor
-    if (nnl_max_tensor == nullptr) {
-        nnl_max_tensor = new Tensor(DT_INT32, TensorShape());
+    if (nnl_max == nullptr) {
+        nnl_max = new Tensor(DT_INT32, TensorShape());
     }
 
     // Pulay stress tensor
-    if (pulay_stress_tensor == nullptr) {
-        pulay_stress_tensor = new Tensor(dtype, TensorShape());
-        pulay_stress_tensor->flat<T>()(0) = 0.0f;
+    if (pulay_stress == nullptr) {
+        pulay_stress = new Tensor(dtype, TensorShape());
+        pulay_stress->flat<T>()(0) = 0.0f;
     }
 
     // electron temperature tensor
-    if (etemperature_tensor == nullptr) {
-        etemperature_tensor = new Tensor(dtype, TensorShape());
-        etemperature_tensor->flat<T>()(0) = etemp;
+    if (etemperature == nullptr) {
+        etemperature = new Tensor(dtype, TensorShape());
+        etemperature->flat<T>()(0) = etemp;
     }
 
     // Volume
-    if (volume_tensor == nullptr) {
-        volume_tensor = new Tensor(dtype, TensorShape());
+    if (volume == nullptr) {
+        volume = new Tensor(dtype, TensorShape());
     }
 
     // Lattice
-    if (h_tensor == nullptr) {
-        h_tensor = new Tensor(dtype, TensorShape({3, 3}));
-        h_tensor->tensor<T, 2>().setConstant(0.f);
+    if (cell == nullptr) {
+        cell = new Tensor(dtype, TensorShape({3, 3}));
+        cell->tensor<T, 2>().setConstant(0.f);
     }
 }
 
@@ -531,17 +524,22 @@ void PairTensorAlloy::coeff(int narg, char **arg)
             } else if (val == "on") {
                 use_hyper_thread = true;
                 if (comm->me == 0) {
-                    std::cout << "Hyper thread mode is enabled" << std::endl;
+                    utils::logmesg(
+                            this->lmp,
+                            fmt::format("Hyper thread mode is enabled\n"));
                 }
             } else {
-                error->all(FLERR, "'on/off' are available values for key 'hyper'");
+                error->all(FLERR,
+                           "'on/off' are valid values for key 'hyper'");
             }
             idx ++;
         } else if (iarg == "etemp") {
             double kelvin = std::atof(string(arg[idx + 1]).c_str());
             etemp = kelvin / eV_to_Kelvin;
             if (comm->me == 0) {
-                std::cout << "Electron temperature is " << etemp << " (eV)" << std::endl;
+                utils::logmesg(
+                        this->lmp, fmt::format(
+                                "Electron temperature is {:.4f} eV\n", etemp));
             }
             idx ++;
         } else {
@@ -552,6 +550,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
 
     // Load the graph model
     graph_model = new GraphModel(
+            this->lmp,
             string(arg[0]),
             symbols,
             error,
@@ -563,7 +562,7 @@ void PairTensorAlloy::coeff(int narg, char **arg)
     vap->build(atom->nlocal, atom->type);
 
     if (comm->me == 0) {
-        std::cout << "VAP initialized." << std::endl;
+        utils::logmesg(this->lmp, "VAP initialized\n");
     }
 
     // Allocate arrays and tensors.
@@ -598,9 +597,9 @@ void PairTensorAlloy::coeff(int narg, char **arg)
 void PairTensorAlloy::init_style()
 {
     if (atom->tag_enable == 0)
-        error->all(FLERR,"Pair style Tersoff requires atom IDs");
+        error->all(FLERR, "Pair style Tersoff requires atom IDs");
     if (force->newton_pair == 0)
-        error->all(FLERR,"Pair style Tersoff requires newton pair on");
+        error->all(FLERR, "Pair style Tersoff requires newton pair on");
 
     // need a full neighbor list
 
@@ -629,14 +628,14 @@ double PairTensorAlloy::init_one(int /*i*/, int /*j*/)
 double PairTensorAlloy::tensors_memory_usage()
 {
     double bytes = 0.0;
-    bytes += h_tensor->TotalBytes();
-    bytes += R_tensor->TotalBytes();
-    bytes += volume_tensor->TotalBytes();
-    bytes += atom_mask_tensor->TotalBytes();
-    bytes += nnl_max_tensor->TotalBytes();
-    bytes += pulay_stress_tensor->TotalBytes();
-    bytes += etemperature_tensor->TotalBytes();
-    bytes += atom_mask_tensor->TotalBytes();
+    bytes += cell->TotalBytes();
+    bytes += positions->TotalBytes();
+    bytes += volume->TotalBytes();
+    bytes += atom_masks->TotalBytes();
+    bytes += nnl_max->TotalBytes();
+    bytes += pulay_stress->TotalBytes();
+    bytes += etemperature->TotalBytes();
+    bytes += atom_masks->TotalBytes();
     bytes += dynamic_bytes;
     return bytes;
 }
