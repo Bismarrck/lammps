@@ -11,11 +11,11 @@ PairStyle(tensoralloy, PairTensorAlloy)
 #ifndef LMP_PAIR_TENSORALLOY_H
 #define LMP_PAIR_TENSORALLOY_H
 
-#include "graph_model.h"
+#include <chrono>
 #include "pair.h"
+#include "atom.h"
+#include "graph_model.h"
 #include "virtual_atom_approach.h"
-#include <atom.h>
-
 #include "tensorflow/core/public/session.h"
 
 namespace LAMMPS_NS {
@@ -53,7 +53,6 @@ protected:
   template <typename T> void allocate(DataType dtype);
   template <typename T> void update_tensors(DataType dtype);
 
-private:
   bool use_hyper_thread;
 
   // Electron temperature (eV)
@@ -69,6 +68,10 @@ private:
   Tensor *atom_masks;
   Tensor *row_splits;
 
+private:
+  int num_calls;
+  double neigh_extra;
+  double elapsed;
   double dynamic_bytes;
   double tensors_memory_usage();
 };

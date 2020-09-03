@@ -74,6 +74,9 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
   nnl_max = nullptr;
   row_splits = nullptr;
   etemp = 0.0;
+  neigh_extra = 0.05;
+  num_calls = 0;
+  elapsed = 0.0;
   use_hyper_thread = false;
   dynamic_bytes = 0;
 }
@@ -83,6 +86,16 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
 ------------------------------------------------------------------------- */
 
 PairTensorAlloy::~PairTensorAlloy() {
+  if (comm->me == 0) {
+    utils::logmesg(
+        this->lmp,
+        fmt::format("Total number of session->run calls = {:d}/core\n",
+                    num_calls));
+    utils::logmesg(this->lmp,
+                   fmt::format("Average session->run cost: {:.2f} ms/core\n",
+                               elapsed / num_calls));
+  }
+
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
@@ -199,7 +212,8 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
 
   // Determine nij_max
   // Lammps adds an extra `skin` to `cutoff`, so `nij_max` should be adjusted
-  double neigh_coef = pow(cutmax / (neighbor->skin + cutmax), 3.0) + 0.05;
+  double neigh_coef =
+      pow(cutmax / (neighbor->skin + cutmax), 3.0) + neigh_extra;
   nij_max = 0;
   for (ii = 0; ii < inum; ii++) {
     i = ilist[ii];
@@ -245,6 +259,10 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
       rsq = rijx * rijx + rijy * rijy + rijz * rijz;
 
       if (rsq < cutforcesq) {
+        if (nij == nij_max) {
+          error->all(FLERR, "tensoralloy: neigh_coef is too small");
+        }
+
         jtype = atom->type[j];
 
         rdists_(0, nij) = DOUBLE(sqrt(rsq));
@@ -290,7 +308,17 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
     error->all(FLERR, "Angular part is not implemented yet!");
   }
 
+  auto begin = std::chrono::high_resolution_clock::now();
   std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
+  auto end = std::chrono::high_resolution_clock::now();
+  auto ms = static_cast<double>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
+          .count());
+  if (comm->me == 0) {
+    num_calls++;
+    elapsed += ms;
+  }
+
   auto dEdrij = outputs[1].matrix<T>();
   for (nij = 0; nij < nij_max; nij++) {
     double rij = rdists_(0, nij);
@@ -524,6 +552,13 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
         utils::logmesg(
             this->lmp,
             fmt::format("Electron temperature is {:.4f} eV\n", etemp));
+      }
+      idx++;
+    } else if (iarg == "neigh_extra") {
+      neigh_extra = std::atof(string(arg[idx + 1]).c_str());
+      if (comm->me == 0) {
+        utils::logmesg(this->lmp,
+                       fmt::format("Neigh_coef skin is {:.2f}\n", neigh_extra));
       }
       idx++;
     } else {
