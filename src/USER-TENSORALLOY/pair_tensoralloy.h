@@ -70,6 +70,8 @@ protected:
 
 private:
   int num_calls;
+  double nnl_max_sum;
+  double nij_max_sum;
   double neigh_extra;
   double elapsed;
   double dynamic_bytes;

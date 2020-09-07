@@ -46,6 +46,7 @@ using tensorflow::TensorShape;
 #define MAXLINE 1024
 #define eV_to_Kelvin 11604.51812
 #define DOUBLE(x) static_cast<double>(x)
+#define LOGFILE(x) if (comm->me == 0) { utils::logmesg(this->lmp, x); }
 
 /* ---------------------------------------------------------------------- */
 
@@ -76,6 +77,8 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
   etemp = 0.0;
   neigh_extra = 0.05;
   num_calls = 0;
+  nij_max_sum = 0;
+  nnl_max_sum = 0;
   elapsed = 0.0;
   use_hyper_thread = false;
   dynamic_bytes = 0;
@@ -86,15 +89,13 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
 ------------------------------------------------------------------------- */
 
 PairTensorAlloy::~PairTensorAlloy() {
-  if (comm->me == 0) {
-    utils::logmesg(
-        this->lmp,
-        fmt::format("Total number of session->run calls = {:d}/core\n",
-                    num_calls));
-    utils::logmesg(this->lmp,
-                   fmt::format("Average session->run cost: {:.2f} ms/core\n",
-                               elapsed / num_calls));
-  }
+
+  LOGFILE(fmt::format("Total number of session->run calls = {:d}/core\n",
+                      num_calls))
+  LOGFILE(fmt::format("Average session->run cost: {:.2f} ms/core\n",
+                      elapsed / num_calls))
+  LOGFILE(fmt::format("Average nnl_max: {:.0f}\n", nnl_max_sum / num_calls))
+  LOGFILE(fmt::format("Average nij_max: {:.0f}\n", nij_max_sum / num_calls))
 
   if (allocated) {
     memory->destroy(setflag);
@@ -179,7 +180,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
   int ii, jj, inum, jnum, itype, jtype;
   int ijtype;
   int nij, nij_max;
-  int nnl;
+  int nnl = 0;
   int inc;
   double rsq;
   double rijx, rijy, rijz;
@@ -317,6 +318,8 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
   if (comm->me == 0) {
     num_calls++;
     elapsed += ms;
+    nnl_max_sum += DOUBLE(nnl + 1);
+    nij_max_sum += DOUBLE(nij);
   }
 
   auto dEdrij = outputs[1].matrix<T>();
@@ -401,7 +404,7 @@ template <typename T> void PairTensorAlloy::update_tensors(DataType dtype) {
   int n_atoms_vap = vap->get_n_atoms_vap();
 
   // Radial interaction counters
-  memory->grow(ijnums, n_atoms_vap, n, "pair:ta:rcount");
+  memory->grow(ijnums, n_atoms_vap, n, "pair:tensoralloy:ijnums");
   for (i = 0; i < n_atoms_vap; i++) {
     for (j = 0; j < n; j++) {
       ijnums[i][j] = 0;
@@ -537,10 +540,7 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
         use_hyper_thread = false;
       } else if (val == "on") {
         use_hyper_thread = true;
-        if (comm->me == 0) {
-          utils::logmesg(this->lmp,
-                         fmt::format("Hyper thread mode is enabled\n"));
-        }
+        LOGFILE(fmt::format("Hyper thread mode is enabled\n"))
       } else {
         error->all(FLERR, "'on/off' are valid values for key 'hyper'");
       }
@@ -549,16 +549,13 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
       double kelvin = std::atof(string(arg[idx + 1]).c_str());
       etemp = kelvin / eV_to_Kelvin;
       if (comm->me == 0) {
-        utils::logmesg(
-            this->lmp,
-            fmt::format("Electron temperature is {:.4f} eV\n", etemp));
+        LOGFILE(fmt::format("Electron temperature is {:.4f} eV\n", etemp))
       }
       idx++;
     } else if (iarg == "neigh_extra") {
       neigh_extra = std::atof(string(arg[idx + 1]).c_str());
       if (comm->me == 0) {
-        utils::logmesg(this->lmp,
-                       fmt::format("Neigh_coef skin is {:.2f}\n", neigh_extra));
+        LOGFILE(fmt::format("Neigh_coef skin is {:.2f}\n", neigh_extra))
       }
       idx++;
     } else {
@@ -574,10 +571,7 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
   // Initialize the Virtual-Atom Map
   vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
   vap->build(atom->nlocal, atom->type);
-
-  if (comm->me == 0) {
-    utils::logmesg(this->lmp, "VAP initialized\n");
-  }
+  LOGFILE("VAP initialized\n")
 
   // Allocate arrays and tensors.
   if (graph_model->use_fp64()) {
