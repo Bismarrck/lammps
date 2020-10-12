@@ -382,7 +382,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
 ------------------------------------------------------------------------- */
 
 void PairTensorAlloy::compute(int eflag, int vflag) {
-  if (graph_model->use_fp64()) {
+  if (graph_model->fp64()) {
     run<double>(eflag, vflag, DataType::DT_DOUBLE);
   } else {
     run<float>(eflag, vflag, DataType::DT_FLOAT);
@@ -574,7 +574,7 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
   LOGFILE("VAP initialized\n")
 
   // Allocate arrays and tensors.
-  if (graph_model->use_fp64()) {
+  if (graph_model->fp64()) {
     allocate<double>(DataType::DT_DOUBLE);
   } else {
     allocate<float>(DataType::DT_FLOAT);

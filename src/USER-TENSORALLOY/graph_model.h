@@ -28,8 +28,9 @@ public:
   ~GraphModel();
 
   int get_n_elements() const { return n_elements; }
-  bool angular() const { return use_angular; }
-  bool use_fp64() const { return fp64; }
+  bool angular() const { return _angular; }
+  bool fp64() const { return _fp64; }
+  bool electron_entropy() const { return _eentropy; }
   double get_cutoff(bool angular = false) const {
     return angular ? acut : rcut;
   }
@@ -38,7 +39,6 @@ public:
                           Error *);
 
 protected:
-  bool use_angular;
   double rcut;
   double acut;
   int n_elements;
@@ -53,8 +53,11 @@ protected:
                                  const std::vector<string> &);
   Status read_ops(const Tensor &);
 
-  bool fp64;
   bool decoded;
+
+  bool _angular;
+  bool _fp64;
+  bool _eentropy;
 };
 } // namespace LAMMPS_NS
 

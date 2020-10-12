@@ -4,14 +4,13 @@
 
 #include <vector>
 
+#include "absl/strings/match.h"
 #include "error.h"
 #include "fmt/format.h"
 #include "lammps.h"
 #include "utils.h"
-
 #include "graph_model.h"
 #include "jsoncpp/json/json.h"
-
 #include "tensorflow/core/framework/tensor.h"
 
 using namespace LAMMPS_NS;
@@ -32,9 +31,12 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   filename = graph_model_path;
   rcut = 0.0;
   acut = 0.0;
-  use_angular = false;
   n_elements = 0;
   lmp = lammps;
+
+  _angular = false;
+  _fp64 = false;
+  _eentropy = false;
 
   Status status = load_graph(graph_model_path, serial_mode);
   if (verbose) {
@@ -55,9 +57,9 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
 
   outputs.clear();
   status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
-  fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
+  _fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
   if (verbose) {
-    if (fp64) {
+    if (_fp64) {
       utils::logmesg(lmp, "Graph model uses float64\n");
     } else {
       utils::logmesg(lmp, "Graph model uses float32\n");
@@ -73,6 +75,18 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   status = read_ops(outputs[0]);
   if (!status.ok()) {
     error->all(FLERR, status.error_message());
+  }
+
+  outputs.clear();
+  status = session->Run({}, {ops["eentropy"]}, {}, &outputs);
+  if (absl::StartsWith(status.ToString(),
+                       "Invalid argument: You must feed a value")) {
+    _eentropy = true;
+  } else {
+    _eentropy = false;
+  }
+  if (verbose && _eentropy) {
+    utils::logmesg(lmp, "Electron entropy will be computed");
   }
 
   decoded = true;
@@ -94,8 +108,11 @@ GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
   std::vector<Tensor> outputs;
   std::vector<string> run_ops(
       {ops["free_energy"], ops["dEdrij"], ops["atomic"]});
-  if (use_angular) {
+  if (_angular) {
     run_ops.emplace_back(ops["dEdrijk"]);
+  }
+  if (_eentropy) {
+    run_ops.emplace_back(ops["eentropy"]);
   }
   Status status = session->Run(feed_dict, run_ops, {}, &outputs);
   if (!status.ok()) {
@@ -157,7 +174,7 @@ GraphModel::read_transformer_params(const Tensor &metadata,
     filename = graph_model_path;
     rcut = jsonData["rcut"].asDouble();
     acut = jsonData["acut"].asDouble();
-    use_angular = jsonData["angular"].asBool();
+    _angular = jsonData["angular"].asBool();
     Json::Value graph_symbols = jsonData["elements"];
     n_elements = graph_symbols.size();
 
@@ -202,7 +219,7 @@ Status GraphModel::read_ops(const Tensor &metadata) {
   } else if (ops.find("dEdrij") == ops.end()) {
     auto message = "The radial partial force Op dE/drij is missing";
     return Status(tensorflow::error::Code::INTERNAL, message);
-  } else if (use_angular && ops.find("dEdrijk") == ops.end()) {
+  } else if (_angular && ops.find("dEdrijk") == ops.end()) {
     auto message = "The angular partial force Op dE/drijk is missing";
     return Status(tensorflow::error::Code::INTERNAL, message);
   } else {
