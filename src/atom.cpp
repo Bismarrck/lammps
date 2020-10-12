@@ -168,6 +168,9 @@ Atom::Atom(LAMMPS *lmp) : Pointers(lmp)
   rho = drho = esph = desph = cv = NULL;
   vest = NULL;
 
+  // USER-TENSORALLOY package
+  eentropy = NULL;
+
   // end of customization section
   // --------------------------------------------------------------------
 
@@ -474,6 +477,9 @@ void Atom::peratom_create()
   add_peratom("vest",&vest,DOUBLE,3);
   add_peratom("cv",&cv,DOUBLE,0);
 
+  // USER-TENSORALLOY package
+  add_peratom("eentropy",&eentropy,DOUBLE,0);
+
   // USER-SMD package
 
   add_peratom("contact_radius",&contact_radius,DOUBLE,0);
@@ -593,6 +599,9 @@ void Atom::set_atomflag_defaults()
   mesont_flag = 0;
   contact_radius_flag = smd_data_9_flag = smd_stress_flag = 0;
   eff_plastic_strain_flag = eff_plastic_strain_rate_flag = 0;
+
+  // USER-TENSORALLOY package
+  eentropy_flag = 0;
 
   pdscale = 1.0;
 }
@@ -2414,6 +2423,9 @@ void *Atom::extract(char *name)
   if (strcmp(name,"desph") == 0) return (void *) desph;
   if (strcmp(name,"cv") == 0) return (void *) cv;
   if (strcmp(name,"vest") == 0) return (void *) vest;
+
+  // USER-TENSORALLOY package
+  if (strcmp(name,"eentropy") == 0) return (void *) eentropy;
 
   // USER-MESONT package
   if (strcmp(name,"length") == 0) return (void *) length;

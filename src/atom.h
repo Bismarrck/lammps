@@ -150,6 +150,9 @@ class Atom : protected Pointers {
   double *rho,*drho,*esph,*desph,*cv;
   double **vest;
 
+  // USER-TENSORALLOY package
+  double *eentropy;
+
   // end of customization section
   // --------------------------------------------------------------------
 
@@ -162,6 +165,7 @@ class Atom : protected Pointers {
   int sphere_flag,ellipsoid_flag,line_flag,tri_flag,body_flag;
   int peri_flag,electron_flag;
   int wavepacket_flag,sph_flag;
+  int tensoralloy_flag;
 
   int molecule_flag,molindex_flag,molatom_flag;
   int q_flag,mu_flag;
@@ -171,6 +175,7 @@ class Atom : protected Pointers {
   int rho_flag,esph_flag,cv_flag,vest_flag;
   int dpd_flag,edpd_flag,tdpd_flag;
   int mesont_flag;
+  int eentropy_flag;
 
   // SPIN package
 
