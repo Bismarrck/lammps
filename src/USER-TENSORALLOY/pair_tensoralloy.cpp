@@ -46,7 +46,10 @@ using tensorflow::TensorShape;
 #define MAXLINE 1024
 #define eV_to_Kelvin 11604.51812
 #define DOUBLE(x) static_cast<double>(x)
-#define LOGFILE(x) if (comm->me == 0) { utils::logmesg(this->lmp, x); }
+#define LOGFILE(x)                                                             \
+  if (comm->me == 0) {                                                         \
+    utils::logmesg(this->lmp, x);                                              \
+  }
 
 /* ---------------------------------------------------------------------- */
 
@@ -320,6 +323,15 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
     elapsed += ms;
     nnl_max_sum += DOUBLE(nnl + 1);
     nij_max_sum += DOUBLE(nij);
+  }
+
+  if (graph_model->electron_entropy() &&
+      strcmp(atom->atom_style, "tensoralloy") == 0) {
+    int idx = graph_model->angular() ? 4 : 3;
+    auto eentropy_atom = outputs[idx].flat<T>();
+    for (i = 1; i < vap->get_n_atoms_vap(); i++) {
+      atom->eentropy[i] = eentropy_atom(i - 1);
+    }
   }
 
   auto dEdrij = outputs[1].matrix<T>();
