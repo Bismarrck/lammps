@@ -37,8 +37,10 @@ public:
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
-
   double memory_usage() override;
+
+  void set_etemp(double new_etemp) { etemp = new_etemp; }
+  double get_etemp() { return etemp; }
 
 protected:
   GraphModel *graph_model;

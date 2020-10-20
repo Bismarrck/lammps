@@ -86,7 +86,7 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
     _eentropy = false;
   }
   if (verbose && _eentropy) {
-    utils::logmesg(lmp, "Electron entropy will be computed");
+    utils::logmesg(lmp, "Electron entropy will be computed\n");
   }
 
   decoded = true;
