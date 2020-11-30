@@ -4,14 +4,20 @@
 
 #include <vector>
 
+#define TF_SESS_TRACE 0
+
+#if TF_SESS_TRACE
+#include <fstream>
+#endif
+
 #include "absl/strings/match.h"
 #include "error.h"
 #include "fmt/format.h"
-#include "lammps.h"
-#include "utils.h"
 #include "graph_model.h"
 #include "jsoncpp/json/json.h"
+#include "lammps.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "utils.h"
 
 using namespace LAMMPS_NS;
 
@@ -36,7 +42,7 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
 
   _angular = false;
   _fp64 = false;
-  _eentropy = false;
+  _is_finite_temperature = false;
 
   Status status = load_graph(graph_model_path, serial_mode);
   if (verbose) {
@@ -67,6 +73,18 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   }
 
   outputs.clear();
+  status = session->Run({}, {"Metadata/is_finite_temperature:0"}, {}, &outputs);
+  if (!status.ok()) {
+    auto message = "Decode graph model error: " + status.ToString();
+    error->all(FLERR, message);
+  }
+  _is_finite_temperature =
+      status.ok() && outputs[0].flat<int32>().data()[0] == 1;
+  if (verbose && _is_finite_temperature) {
+    utils::logmesg(lmp, "This is a finite temperature model\n");
+  }
+
+  outputs.clear();
   status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
@@ -75,18 +93,6 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   status = read_ops(outputs[0]);
   if (!status.ok()) {
     error->all(FLERR, status.error_message());
-  }
-
-  outputs.clear();
-  status = session->Run({}, {ops["eentropy"]}, {}, &outputs);
-  if (absl::StartsWith(status.ToString(),
-                       "Invalid argument: You must feed a value")) {
-    _eentropy = true;
-  } else {
-    _eentropy = false;
-  }
-  if (verbose && _eentropy) {
-    utils::logmesg(lmp, "Electron entropy will be computed\n");
   }
 
   decoded = true;
@@ -104,17 +110,38 @@ GraphModel::~GraphModel() { session.reset(); }
 
 std::vector<Tensor>
 GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
-                Error *error) {
+                Error *error, bool collect_trace=false) {
   std::vector<Tensor> outputs;
   std::vector<string> run_ops(
-      {ops["free_energy"], ops["dEdrij"], ops["atomic"]});
+      {ops["energy"], ops["energy/atom"], ops["dEdrij"]});
+  if (_is_finite_temperature) {
+    run_ops.emplace_back(ops["eentropy"]);
+    run_ops.emplace_back(ops["eentropy/atom"]);
+    run_ops.emplace_back(ops["free_energy"]);
+    run_ops.emplace_back(ops["free_energy/atom"]);
+  }
   if (_angular) {
     run_ops.emplace_back(ops["dEdrijk"]);
   }
-  if (_eentropy) {
-    run_ops.emplace_back(ops["eentropy"]);
+  Status status;
+  if (collect_trace) {
+#if TF_SESS_TRACE
+    tensorflow::RunOptions run_options;
+    tensorflow::RunMetadata run_metadata;
+    run_options.set_trace_level(tensorflow::RunOptions_TraceLevel_FULL_TRACE);
+    status = session->Run(run_options, feed_dict, run_ops, {}, &outputs,
+                          &run_metadata);
+    std::string outfile = "serialized";
+    run_metadata.step_stats().SerializeToString(&outfile);
+    std::ofstream ofs("Timeline");
+    ofs << outfile;
+    ofs.close();
+#else
+    status = session->Run(feed_dict, run_ops, {}, &outputs);
+#endif
+  } else {
+    status = session->Run(feed_dict, run_ops, {}, &outputs);
   }
-  Status status = session->Run(feed_dict, run_ops, {}, &outputs);
   if (!status.ok()) {
     auto message = "TensorAlloy internal error: " + status.ToString();
     error->all(FLERR, message);

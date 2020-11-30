@@ -308,12 +308,12 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
       {"Placeholders/g2.rij", *rdists},
   });
 
-  if (graph_model->angular()) {
+  if (graph_model->is_angular()) {
     error->all(FLERR, "Angular part is not implemented yet!");
   }
 
   auto begin = std::chrono::high_resolution_clock::now();
-  std::vector<Tensor> outputs = graph_model->run(feed_dict, error);
+  std::vector<Tensor> outputs = graph_model->run(feed_dict, error, false);
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = static_cast<double>(
       std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
@@ -325,16 +325,17 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
     nij_max_sum += DOUBLE(nij);
   }
 
-  if (graph_model->electron_entropy() &&
+  if (graph_model->is_finite_temperature() &&
       strcmp(atom->atom_style, "tensoralloy") == 0) {
-    int idx = graph_model->angular() ? 4 : 3;
+    int idx = graph_model->get_index_eentropy(true);
     auto eentropy_atom = outputs[idx].flat<T>();
     for (i = 1; i < vap->get_n_atoms_vap(); i++) {
       atom->eentropy[i] = eentropy_atom(i - 1);
     }
   }
 
-  auto dEdrij = outputs[1].matrix<T>();
+  auto dEdrij =
+      outputs[graph_model->get_index_partial_forces(false)].matrix<T>();
   for (nij = 0; nij < nij_max; nij++) {
     double rij = rdists_(0, nij);
     if (std::abs(rij) < 1e-6) {
@@ -366,7 +367,8 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
     }
   }
 
-  auto pe_atom = outputs[2].flat<T>();
+  auto pe_atom =
+      outputs[graph_model->get_index_variation_energy(true)].flat<T>();
   for (i = 1; i < vap->get_n_atoms_vap(); i++) {
     if (eflag) {
       ev_tally_full(vap_to_local_map[i], 2.0 * pe_atom(i - 1), 0.0, 0.0, 0.0,
@@ -394,7 +396,7 @@ void PairTensorAlloy::run(int eflag, int vflag, DataType dtype) {
 ------------------------------------------------------------------------- */
 
 void PairTensorAlloy::compute(int eflag, int vflag) {
-  if (graph_model->fp64()) {
+  if (graph_model->is_fp64()) {
     run<double>(eflag, vflag, DataType::DT_DOUBLE);
   } else {
     run<float>(eflag, vflag, DataType::DT_FLOAT);
@@ -586,7 +588,7 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
   LOGFILE("VAP initialized\n")
 
   // Allocate arrays and tensors.
-  if (graph_model->fp64()) {
+  if (graph_model->is_fp64()) {
     allocate<double>(DataType::DT_DOUBLE);
   } else {
     allocate<float>(DataType::DT_FLOAT);

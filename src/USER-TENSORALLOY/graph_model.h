@@ -28,15 +28,34 @@ public:
   ~GraphModel();
 
   int get_n_elements() const { return n_elements; }
-  bool angular() const { return _angular; }
-  bool fp64() const { return _fp64; }
-  bool electron_entropy() const { return _eentropy; }
+  bool is_angular() const { return _angular; }
+  bool is_fp64() const { return _fp64; }
+  bool is_finite_temperature() const { return _is_finite_temperature; }
   double get_cutoff(bool angular = false) const {
     return angular ? acut : rcut;
   }
 
   std::vector<Tensor> run(const std::vector<std::pair<string, Tensor>> &,
-                          Error *);
+                          Error *, bool);
+
+  int get_index_variation_energy(bool atomic) const {
+    return static_cast<int>(atomic) + (_is_finite_temperature ? 5 : 0);
+  }
+
+  int get_index_free_energy(bool atomic) const {
+    if (!_is_finite_temperature) return -1;
+    else return 5 + static_cast<int>(atomic);
+  }
+
+  int get_index_eentropy(bool atomic) const {
+    if (!_is_finite_temperature) return -1;
+    else return 3 + static_cast<int>(atomic);
+  }
+
+  int get_index_partial_forces(bool angular=false) const {
+    if (angular) return _is_finite_temperature ? 7 : 3;
+    else return 2;
+  }
 
 protected:
   double rcut;
@@ -57,7 +76,7 @@ protected:
 
   bool _angular;
   bool _fp64;
-  bool _eentropy;
+  bool _is_finite_temperature;
 };
 } // namespace LAMMPS_NS
 
