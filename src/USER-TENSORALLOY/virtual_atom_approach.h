@@ -2,22 +2,21 @@
 // Created by Xin Chen on 2019-07-02.
 //
 
-#ifndef LMP_TENSORALLOY_VAP_H
-#define LMP_TENSORALLOY_VAP_H
+#ifndef LIBTENSORALLOY_VAP_H
+#define LIBTENSORALLOY_VAP_H
 
-#include "memory.h"
-#include "pair.h"
+#include "lmp_utils.h"
 #include <iostream>
 #include <tensorflow/core/platform/default/integral_types.h>
 #include <vector>
 
-namespace LAMMPS_NS {
+namespace LIBTENSORALLOY_NS {
 
 using tensorflow::int32;
 
 class VirtualAtomMap {
 public:
-  explicit VirtualAtomMap(Memory *, int);
+  VirtualAtomMap(Memory *, int);
   ~VirtualAtomMap();
 
   void build(int, const int *);

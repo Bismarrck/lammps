@@ -11,15 +11,11 @@
 #endif
 
 #include "absl/strings/match.h"
-#include "error.h"
-#include "fmt/format.h"
 #include "graph_model.h"
 #include "jsoncpp/json/json.h"
-#include "lammps.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "utils.h"
 
-using namespace LAMMPS_NS;
+using namespace LIBTENSORALLOY_NS;
 
 using tensorflow::int32;
 using tensorflow::Status;
@@ -30,15 +26,14 @@ using tensorflow::Tensor;
    Initialization.
 ------------------------------------------------------------------------- */
 
-GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
-                       const std::vector<string> &symbols, Error *error,
+GraphModel::GraphModel(logger log, const string &graph_model_path,
+                       const std::vector<string> &symbols, logger err,
                        bool serial_mode, bool verbose) {
   decoded = false;
   filename = graph_model_path;
   rcut = 0.0;
   acut = 0.0;
   n_elements = 0;
-  lmp = lammps;
 
   _angular = false;
   _fp64 = false;
@@ -46,19 +41,18 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
 
   Status status = load_graph(graph_model_path, serial_mode);
   if (verbose) {
-    utils::logmesg(lmp,
-                   fmt::format("Read {}: {}\n", filename, status.ToString()));
+    log(("Read" + filename + ": " + status.ToString() + "\n").c_str());
   }
 
   std::vector<Tensor> outputs;
   status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    error->all(FLERR, message);
+    err(message.c_str());
   }
   status = read_transformer_params(outputs[0], filename, symbols);
   if (!status.ok()) {
-    error->all(FLERR, status.error_message());
+    err(status.error_message().c_str());
   }
 
   outputs.clear();
@@ -66,9 +60,9 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   _fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
   if (verbose) {
     if (_fp64) {
-      utils::logmesg(lmp, "Graph model uses float64\n");
+      log("Graph model uses float64\n");
     } else {
-      utils::logmesg(lmp, "Graph model uses float32\n");
+      log("Graph model uses float32\n");
     }
   }
 
@@ -76,23 +70,23 @@ GraphModel::GraphModel(LAMMPS *lammps, const string &graph_model_path,
   status = session->Run({}, {"Metadata/is_finite_temperature:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    error->all(FLERR, message);
+    err(message.c_str());
   }
   _is_finite_temperature =
       status.ok() && outputs[0].flat<int32>().data()[0] == 1;
   if (verbose && _is_finite_temperature) {
-    utils::logmesg(lmp, "This is a finite temperature model\n");
+    log("This is a finite temperature model\n");
   }
 
   outputs.clear();
   status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    error->all(FLERR, message);
+    err(message.c_str());
   }
   status = read_ops(outputs[0]);
   if (!status.ok()) {
-    error->all(FLERR, status.error_message());
+    err(status.error_message().c_str());
   }
 
   decoded = true;
@@ -110,7 +104,7 @@ GraphModel::~GraphModel() { session.reset(); }
 
 std::vector<Tensor>
 GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
-                Error *error, bool collect_trace=false) {
+                Status &status, bool collect_trace=false) {
   std::vector<Tensor> outputs;
   std::vector<string> run_ops(
       {ops["energy"], ops["energy/atom"], ops["dEdrij"]});
@@ -123,7 +117,6 @@ GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
   if (_angular) {
     run_ops.emplace_back(ops["dEdrijk"]);
   }
-  Status status;
   if (collect_trace) {
 #if TF_SESS_TRACE
     tensorflow::RunOptions run_options;
@@ -141,10 +134,6 @@ GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
 #endif
   } else {
     status = session->Run(feed_dict, run_ops, {}, &outputs);
-  }
-  if (!status.ok()) {
-    auto message = "TensorAlloy internal error: " + status.ToString();
-    error->all(FLERR, message);
   }
   return outputs;
 }

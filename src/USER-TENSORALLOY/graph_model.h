@@ -2,16 +2,17 @@
 // Created by Xin Chen on 2019-07-26.
 //
 
-#ifndef LMP_TENSORALLOY_GRAPH_MODEL_H
-#define LMP_TENSORALLOY_GRAPH_MODEL_H
+#ifndef LIBTENSORLLOY_GRAPH_MODEL_H
+#define LIBTENSORLLOY_GRAPH_MODEL_H
 
-#include "pair.h"
-
+#include "tensoralloy_utils.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/default/integral_types.h"
 #include "tensorflow/core/public/session.h"
 
-namespace LAMMPS_NS {
+namespace LIBTENSORALLOY_NS {
+
+//typedef void logger(const char *message);
 
 using tensorflow::int32;
 using tensorflow::Status;
@@ -21,9 +22,9 @@ using tensorflow::Tensor;
 class GraphModel {
 
 public:
-  GraphModel(LAMMPS *lammps, const string &graph_model_path,
-             const std::vector<string> &symbols, Error *error, bool serial_mode,
-             bool verbose);
+  GraphModel(logger log, const string &graph_model_path,
+             const std::vector<string> &symbols, logger err,
+             bool serial_mode, bool verbose);
 
   ~GraphModel();
 
@@ -36,7 +37,7 @@ public:
   }
 
   std::vector<Tensor> run(const std::vector<std::pair<string, Tensor>> &,
-                          Error *, bool);
+                          Status &, bool);
 
   int get_index_variation_energy(bool atomic) const {
     return static_cast<int>(atomic) + (_is_finite_temperature ? 5 : 0);
@@ -61,7 +62,6 @@ protected:
   double rcut;
   double acut;
   int n_elements;
-  LAMMPS *lmp;
   std::vector<string> symbols;
   string filename;
   std::map<string, string> ops;
@@ -78,6 +78,6 @@ protected:
   bool _fp64;
   bool _is_finite_temperature;
 };
-} // namespace LAMMPS_NS
+} // namespace LIBTENSORALLOY_NS
 
-#endif // LMP_TENSORALLOY_GRAPH_MODEL_H
+#endif // LIBTENSORLLOY_GRAPH_MODEL_H

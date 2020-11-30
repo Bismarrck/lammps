@@ -4,7 +4,7 @@
 
 #include "virtual_atom_approach.h"
 
-using namespace LAMMPS_NS;
+using namespace LIBTENSORALLOY_NS;
 
 #define REAL_ATOM_START 1
 
@@ -12,9 +12,9 @@ using namespace LAMMPS_NS;
    Initialization.
 ------------------------------------------------------------------------- */
 
-VirtualAtomMap::VirtualAtomMap(Memory *pool, int n_elements_) {
+VirtualAtomMap::VirtualAtomMap(Memory *pool, int num_elements) {
   n_atoms_vap = 0;
-  n_elements = n_elements_;
+  n_elements = num_elements;
   memory = pool;
 
   atom_masks = nullptr;
