@@ -85,8 +85,8 @@ PairTensorAlloy::~PairTensorAlloy() {
     LOGFILE(format("Total session->run calls = {:.0f}/core\n", stats.num_calls))
     LOGFILE(format("Avg session->run cost: {:.2f} ms/core\n",
                    stats.elapsed / stats.num_calls))
-    LOGFILE(format("Avg nnl_max: {:.0f}\n", stats.nnl_max / stats.num_calls))
-    LOGFILE(format("Avg nij_max: {:.0f}\n", stats.nij_max / stats.num_calls))
+    LOGFILE(format("Avg nnl_max: {:.0f}\n", stats.nnl_max_sum / stats.num_calls))
+    LOGFILE(format("Avg nij_max: {:.0f}\n", stats.nij_max_sum / stats.num_calls))
   }
   if (allocated && calc) {
     delete calc;

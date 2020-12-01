@@ -10,6 +10,8 @@
 #include "tensorflow/core/platform/default/integral_types.h"
 #include "tensorflow/core/public/session.h"
 
+#define ToInt(x) static_cast<int>(x)
+
 namespace LIBTENSORALLOY_NS {
 
 using tensorflow::int32;
@@ -20,9 +22,9 @@ using tensorflow::Tensor;
 class GraphModel {
 
 public:
-  GraphModel(const string &graph_model_path,
-             const std::vector<string> &symbols, bool serial_mode,
-             bool verbose, logger log, logger err);
+  GraphModel(const string &graph_model_path, const std::vector<string> &symbols,
+             bool serial_mode, bool verbose, const logger &log,
+             const logger &err);
 
   ~GraphModel();
 
@@ -38,22 +40,40 @@ public:
                           Status &, bool);
 
   int get_index_variation_energy(bool atomic) const {
-    return static_cast<int>(atomic) + (_is_finite_temperature ? 5 : 0);
+    int x = static_cast<int>(atomic);
+    if (_is_finite_temperature) {
+      return x + 5 - ToInt(_only_compute_energy);
+    } else
+      return x + 0;
   }
 
   int get_index_free_energy(bool atomic) const {
-    if (!_is_finite_temperature) return -1;
-    else return 5 + static_cast<int>(atomic);
+    if (!_is_finite_temperature)
+      return -1;
+    else
+      return 5 + ToInt(atomic) - ToInt(_only_compute_energy);
   }
 
   int get_index_eentropy(bool atomic) const {
-    if (!_is_finite_temperature) return -1;
-    else return 3 + static_cast<int>(atomic);
+    if (!_is_finite_temperature)
+      return -1;
+    else
+      return 3 + ToInt(atomic) - ToInt(_only_compute_energy);
   }
 
-  int get_index_partial_forces(bool angular=false) const {
-    if (angular) return _is_finite_temperature ? 7 : 3;
-    else return 2;
+  int get_index_partial_forces(bool angular = false) const {
+    if (_only_compute_energy)
+      return -1;
+    if (angular)
+      return _is_finite_temperature ? 7 : 3;
+    else
+      return 2;
+  }
+
+  /// @brief Set `energy_only` to true so that only energy (`free energy` and
+  /// `eentropy` for finite temperature modesl) will be calculated.
+  void set_compute_mode(bool energy_only) {
+    _only_compute_energy = energy_only;
   }
 
 protected:
@@ -70,11 +90,10 @@ protected:
                                  const std::vector<string> &);
   Status read_ops(const Tensor &);
 
-  bool decoded;
-
   bool _angular;
   bool _fp64;
   bool _is_finite_temperature;
+  bool _only_compute_energy;
 };
 } // namespace LIBTENSORALLOY_NS
 

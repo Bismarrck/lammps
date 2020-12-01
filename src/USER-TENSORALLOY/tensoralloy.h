@@ -17,8 +17,8 @@ using tensorflow::Status;
 namespace LIBTENSORALLOY_NS {
 
 struct CallStatistics {
-  double nij_max;
-  double nnl_max;
+  double nij_max_sum;
+  double nnl_max_sum;
   double elapsed;
   double num_calls;
 };
@@ -32,14 +32,24 @@ public:
               const logger& errfun);
   ~TensorAlloy();
 
+  /// @brief Compute total energy (etotal), atomic energy (eatom)
+  Status compute(int nlocal, int ntypes, int *itypes, const int *ilist,
+                 const int *numneigh, int **firstneigh, double **x,
+                 double etemp, double &etotal, double *eatom);
+
+  /// @brief Compute total energy (etotal), atomic energy (eatom), forces (f)
+  /// virial (unit is eV) and per-atom virial.
   Status compute(int nlocal, int ntypes, int *itypes, const int *ilist,
                  const int *numneigh, int **firstneigh, double **x, double **f,
                  double *eentropy, double etemp, double &etotal, double *eatom,
                  double *virial, double **vatom);
 
-  void set_neigh_coef(double val) { neigh_coef = val; }
-  void collect_call_statistics() { collect_statistics = true; }
+  /// @brief Manually set `neigh_coef`. For calculations outside lammps,
+  /// `neigh_coef` should be 1.0
+  void set_neigh_coef(double val) { neigh_coef = MAX(MIN(val, 1.0), 0.2); }
 
+  /// @brief Collect sess->run related statistics
+  void collect_call_statistics() { collect_statistics = true; }
   CallStatistics get_call_statistics() { return call_stats; }
 
   GraphModel *get_model() { return graph_model; }

@@ -28,8 +28,7 @@ using tensorflow::Tensor;
 
 GraphModel::GraphModel(const string &graph_model_path,
                        const std::vector<string> &symbols, bool serial_mode,
-                       bool verbose, logger log, logger err) {
-  decoded = false;
+                       bool verbose, const logger& log, const logger& err) {
   filename = graph_model_path;
   rcut = 0.0;
   acut = 0.0;
@@ -38,6 +37,7 @@ GraphModel::GraphModel(const string &graph_model_path,
   _angular = false;
   _fp64 = false;
   _is_finite_temperature = false;
+  _only_compute_energy = false;
 
   Status status = load_graph(graph_model_path, serial_mode);
   if (verbose) {
@@ -88,8 +88,6 @@ GraphModel::GraphModel(const string &graph_model_path,
   if (!status.ok()) {
     err(status.error_message().c_str());
   }
-
-  decoded = true;
 }
 
 /* ----------------------------------------------------------------------
@@ -107,14 +105,17 @@ GraphModel::run(const std::vector<std::pair<string, Tensor>> &feed_dict,
                 Status &status, bool collect_trace=false) {
   std::vector<Tensor> outputs;
   std::vector<string> run_ops(
-      {ops["energy"], ops["energy/atom"], ops["dEdrij"]});
+      {ops["energy"], ops["energy/atom"]});
+  if (!_only_compute_energy) {
+    run_ops.emplace_back(ops["dEdrij"]);
+  }
   if (_is_finite_temperature) {
     run_ops.emplace_back(ops["eentropy"]);
     run_ops.emplace_back(ops["eentropy/atom"]);
     run_ops.emplace_back(ops["free_energy"]);
     run_ops.emplace_back(ops["free_energy/atom"]);
   }
-  if (_angular) {
+  if (_angular && !_only_compute_energy) {
     run_ops.emplace_back(ops["dEdrijk"]);
   }
   if (collect_trace) {

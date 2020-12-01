@@ -26,9 +26,7 @@ using tensorflow::TensorShape;
 TensorAlloy::TensorAlloy(const string &graph_model_path,
                          const std::vector<string> &symbols, int nlocal,
                          int ntypes, int *itypes, bool verbose,
-                         const logger& logfun,
-                         const logger& errfun)
-{
+                         const logger &logfun, const logger &errfun) {
   // Initialize internal variables
   neigh_coef = 1.0;
   cutforcesq = 0.0;
@@ -249,10 +247,10 @@ template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
 
 template <typename T>
 Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
-                        const int *ilist, const int *numneigh,
-                        int **firstneigh, double **x, double **f,
-                        double *eentropy, double etemp, double &etotal,
-                        double *eatom, double *virial, double **vatom) {
+                        const int *ilist, const int *numneigh, int **firstneigh,
+                        double **x, double **f, double *eentropy, double etemp,
+                        double &etotal, double *eatom, double *virial,
+                        double **vatom) {
   int i, j;
   int ii, jj, jnum, itype, jtype;
   int ijtype;
@@ -384,8 +382,8 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   if (collect_statistics) {
     call_stats.num_calls++;
     call_stats.elapsed += ms;
-    call_stats.nnl_max += DOUBLE(nnl + 1);
-    call_stats.nij_max += DOUBLE(nij);
+    call_stats.nnl_max_sum += DOUBLE(nnl + 1);
+    call_stats.nij_max_sum += DOUBLE(nij);
   }
 
   if (graph_model->is_finite_temperature() && eentropy) {
@@ -479,7 +477,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 }
 
 /* ----------------------------------------------------------------------
-   compute with different precision
+   The compute methods
 ------------------------------------------------------------------------- */
 
 Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes,
@@ -496,4 +494,18 @@ Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes,
                       firstneigh, x, f, eentropy, etemp, etotal, eatom, virial,
                       vatom);
   }
+}
+
+Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes,
+                            const int *ilist, const int *numneigh,
+                            int **firstneigh, double **x, double etemp,
+                            double &etotal, double *eatom) {
+  if (graph_model->is_fp64())
+    return run<double>(DT_DOUBLE, nlocal, ntypes, itypes, ilist, numneigh,
+                       firstneigh, x, nullptr, nullptr, etemp, etotal, eatom,
+                       nullptr, nullptr);
+  else
+    return run<float>(DT_FLOAT, nlocal, ntypes, itypes, ilist, numneigh,
+                      firstneigh, x, nullptr, nullptr, etemp, etotal, eatom,
+                      nullptr, nullptr);
 }
