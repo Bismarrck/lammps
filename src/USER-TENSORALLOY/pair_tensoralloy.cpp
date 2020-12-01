@@ -70,7 +70,7 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
   use_hyper_thread = false;
   dynamic_bytes = 0;
   calc = nullptr;
-  neigh_extra = 0.1;
+  neigh_extra = 0.25;
   cutmax = 0.0;
   cutforcesq = 0.0;
 }
@@ -80,15 +80,14 @@ PairTensorAlloy::PairTensorAlloy(LAMMPS *lmp) : Pair(lmp) {
 ------------------------------------------------------------------------- */
 
 PairTensorAlloy::~PairTensorAlloy() {
-
   CallStatistics stats = calc->get_call_statistics();
-
-  LOGFILE(format("Total session->run calls = {:d}/core\n", stats.num_calls))
-  LOGFILE(format("Avg session->run cost: {:.2f} ms/core\n",
-                 stats.elapsed / stats.num_calls))
-  LOGFILE(format("Avg nnl_max: {:.0f}\n", stats.nnl_max / stats.num_calls))
-  LOGFILE(format("Avg nij_max: {:.0f}\n", stats.nij_max / stats.num_calls))
-
+  if (stats.num_calls > 0) {
+    LOGFILE(format("Total session->run calls = {:.0f}/core\n", stats.num_calls))
+    LOGFILE(format("Avg session->run cost: {:.2f} ms/core\n",
+                   stats.elapsed / stats.num_calls))
+    LOGFILE(format("Avg nnl_max: {:.0f}\n", stats.nnl_max / stats.num_calls))
+    LOGFILE(format("Avg nij_max: {:.0f}\n", stats.nij_max / stats.num_calls))
+  }
   if (allocated && calc) {
     delete calc;
     calc = nullptr;
@@ -109,20 +108,27 @@ void PairTensorAlloy::compute(int eflag, int vflag)
   calc->set_neigh_coef(neigh_coef);
 
   double etotal = 0.0;
+  double vtotal[6] = {0, 0, 0, 0, 0, 0};
+
   Status status = calc->compute(
       atom->nlocal, atom->ntypes, atom->type, list->ilist, list->numneigh,
-      list->firstneigh, atom->x, atom->f, nullptr, etemp, etotal, eatom);
+      list->firstneigh, atom->x, atom->f, nullptr, etemp, etotal, eatom, vtotal,
+      vatom);
 
-  eng_vdwl = etotal;
-
-  VirtualAtomMap *vap = calc->get_vap();
-
+  if (eflag) {
+    eng_vdwl = etotal;
+  }
+  if (vflag_global) {
+    for (int i = 0; i < 6; i ++) {
+      virial[i] = vtotal[i];
+    }
+  }
   if (vflag_fdotr) {
     virial_fdotr_compute();
   }
 
   dynamic_bytes = 0;
-  dynamic_bytes += vap->memory_usage();
+  dynamic_bytes += calc->get_vap()->memory_usage();
 }
 
 /* ----------------------------------------------------------------------
@@ -200,8 +206,12 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
   auto func1 = [this](const char *msg)->void {utils::logmesg(lmp, msg);};
   auto func2 = [this](const char *msg)->void {error->all(FLERR,msg);};
 
+  bool cpu0 = comm->me == 0;
   calc = new TensorAlloy(string(arg[0]), symbols, atom->nlocal, atom->ntypes,
-                         atom->type, comm->me == 0, func1, func2);
+                         atom->type, cpu0, func1, func2);
+  if (cpu0) {
+    calc->collect_call_statistics();
+  }
 
   // Set atomic masses
   double atom_mass[symbols.size()];

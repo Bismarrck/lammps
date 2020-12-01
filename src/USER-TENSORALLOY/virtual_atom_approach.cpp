@@ -64,12 +64,12 @@ void VirtualAtomMap::build(const int nlocal, const int *itypes) {
     memory->destroy(offsets);
     memory->destroy(splits);
   }
-  memory->create(atom_masks, n_atoms_vap, "pair:tensoralloy:vap:mask");
-  memory->create(local_to_vap_map, nlocal, "pair:tensoralloy:vap:local2vap");
+  memory->create(atom_masks, n_atoms_vap, "tensoralloy:vap:mask");
+  memory->create(local_to_vap_map, nlocal, "tensoralloy:vap:local2vap");
   memory->create(vap_to_local_map, n_atoms_vap,
-                 "pair:tensoralloy:vap:vap2local");
-  memory->create(offsets, n_symbols_vap, "pair:tensoralloy:vap:offsets");
-  memory->create(splits, n_symbols_vap, "pair:tensoralloy:vap:splits");
+                 "tensoralloy:vap:vap2local");
+  memory->create(offsets, n_symbols_vap, "tensoralloy:vap:offsets");
+  memory->create(splits, n_symbols_vap, "tensoralloy:vap:splits");
   total_bytes = static_cast<double>(sizeof(int32)) *
                 (n_atoms_vap * 2 + nlocal * 2 + n_symbols_vap * 2);
 
@@ -78,7 +78,7 @@ void VirtualAtomMap::build(const int nlocal, const int *itypes) {
     atom_masks[i] = 0.0;
 
   // Initialize `delta` to all zeros.
-  memory->create(delta, n_symbols_vap, "pair:tensoralloy:vap:delta");
+  memory->create(delta, n_symbols_vap, "tensoralloy:vap:delta");
   for (i = 0; i < n_symbols_vap; i++) {
     delta[i] = 0;
   }
@@ -138,13 +138,13 @@ bool VirtualAtomMap::build_max_occurs(int nlocal, const int *atom_types) {
 
   int size = n_elements + 1;
   if (max_occurs == nullptr) {
-    memory->create(max_occurs, size, "pair:tensoralloy:vap:max_occurs");
+    memory->create(max_occurs, size, "tensoralloy:vap:max_occurs");
   }
 
   if (is_changed) {
     curr_nlocal = nlocal;
     curr_itypes =
-        memory->grow(curr_itypes, nlocal, "pair:tensoralloy:vap:curr_itypes");
+        memory->grow(curr_itypes, nlocal, "tensoralloy:vap:curr_itypes");
     for (int i = 0; i < nlocal; i++) {
       curr_itypes[i] = atom_types[i];
     }

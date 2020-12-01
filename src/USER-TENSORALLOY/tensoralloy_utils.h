@@ -11,10 +11,12 @@ typedef tensorflow::int64 bigint;
 typedef std::function<void (const char *)> logger;
 
 class Memory {
+
+private:
+  logger _logger;
+
 public:
   explicit Memory(const logger &logfunc) { _logger = logfunc; };
-
-  logger _logger;
 
   void *smalloc(bigint n, const char *);
   void *srealloc(void *, bigint n, const char *);

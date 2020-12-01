@@ -34,9 +34,11 @@ public:
 
   Status compute(int nlocal, int ntypes, int *itypes, const int *ilist,
                  const int *numneigh, int **firstneigh, double **x, double **f,
-                 double *eentropy, double etemp, double &etotal, double *pe);
+                 double *eentropy, double etemp, double &etotal, double *eatom,
+                 double *virial, double **vatom);
 
   void set_neigh_coef(double val) { neigh_coef = val; }
+  void collect_call_statistics() { collect_statistics = true; }
 
   CallStatistics get_call_statistics() { return call_stats; }
 
@@ -49,7 +51,7 @@ protected:
   Memory *memory;
 
   double neigh_coef;
-  double cutforcesq, cutmax;
+  double cutforcesq;
 
 private:
   logger err;
@@ -59,10 +61,9 @@ private:
   Status run(DataType dtype, int nlocal, int ntypes, int *itypes,
              const int *ilist, const int *numneigh, int **firstneigh,
              double **x, double **f, double *eentropy, double etemp,
-             double &etotal, double *pe);
+             double &etotal, double *eatom, double *virial, double **vatom);
 
-  void allocate(int ntypes);
-  template <typename T> void init(DataType dtype, int ntypes);
+  template <typename T> void allocate(DataType dtype, int ntypes);
   template <typename T>
   void update_tensors(DataType dtype, int ntypes, double etemp);
 
@@ -77,7 +78,7 @@ private:
   Tensor *row_splits;
 
   bool collect_statistics;
-  CallStatistics call_stats;
+  CallStatistics call_stats{0, 0, 0, 0};
 
   int32 **ijtypes;
   int32 **ijnums;

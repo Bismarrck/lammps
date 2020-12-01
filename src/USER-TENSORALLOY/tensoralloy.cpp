@@ -7,6 +7,10 @@
 #define eV_to_Kelvin 11604.51812
 #define DOUBLE(x) static_cast<double>(x)
 
+#if !defined(NEIGHMASK)
+#define NEIGHMASK 0x3FFFFFFF
+#endif
+
 using namespace LIBTENSORALLOY_NS;
 
 using tensorflow::DataType;
@@ -25,8 +29,33 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
                          const logger& logfun,
                          const logger& errfun)
 {
+  // Initialize internal variables
+  neigh_coef = 1.0;
+  cutforcesq = 0.0;
+  collect_statistics = false;
+
+  // Set all internal pointers to null
+  ijnums = nullptr;
+  ijtypes = nullptr;
+  cell = nullptr;
+  positions = nullptr;
+  volume = nullptr;
+  n_atoms_vap_tensor = nullptr;
+  nnl_max = nullptr;
+  pulay_stress = nullptr;
+  etemperature = nullptr;
+  atom_masks = nullptr;
+  row_splits = nullptr;
+  memory = nullptr;
+  graph_model = nullptr;
+  vap = nullptr;
+
+  // The external logging functions
   err = errfun;
   log = logfun;
+
+  // Initialize a memory pool
+  memory = new Memory(logfun);
 
   // Load the graph model
   graph_model =
@@ -38,13 +67,15 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
   logfun("VAP initialized\n");
 
   // Allocate arrays and tensors.
-  allocate(ntypes);
+  if (graph_model->is_fp64()) {
+    allocate<double>(DT_DOUBLE, ntypes);
+  } else {
+    allocate<float>(DT_FLOAT, ntypes);
+  }
 
   // Set `cutmax`.
-  cutmax = graph_model->get_cutoff();
-
-  // Initialize the call statistics
-  call_stats = CallStatistics({0, 0, 0, 0});
+  double rc = graph_model->get_cutoff();
+  cutforcesq = rc * rc;
 }
 
 /* ----------------------------------------------------------------------
@@ -91,6 +122,9 @@ TensorAlloy::~TensorAlloy() {
     delete graph_model;
     graph_model = nullptr;
   }
+
+  delete memory;
+  memory = nullptr;
 }
 
 /* ----------------------------------------------------------------------
@@ -185,16 +219,7 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
    Allocate arrays
 ------------------------------------------------------------------------- */
 
-void TensorAlloy::allocate(int ntypes)
-{
-  if (graph_model->is_fp64()) {
-    init<double>(DT_DOUBLE, ntypes);
-  } else {
-    init<float>(DT_FLOAT, ntypes);
-  }
-}
-
-template <typename T> void TensorAlloy::init(DataType dtype, int ntypes) {
+template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
   if (vap == nullptr) {
     err("VAP is not succesfully initialized.");
   }
@@ -227,9 +252,9 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
                         const int *ilist, const int *numneigh,
                         int **firstneigh, double **x, double **f,
                         double *eentropy, double etemp, double &etotal,
-                        double *pe) {
+                        double *eatom, double *virial, double **vatom) {
   int i, j;
-  int ii, jj, inum, jnum, itype, jtype;
+  int ii, jj, jnum, itype, jtype;
   int ijtype;
   int nij, nij_max;
   int nnl = 0;
@@ -238,6 +263,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   double rijx, rijy, rijz;
   double fx, fy, fz;
   int *ivec, *jvec, *jlist;
+  double v[6] = {0, 0, 0, 0, 0, 0};
   const int32 *local_to_vap_map, *vap_to_local_map;
 
   // Update all tensors if needed.
@@ -254,11 +280,11 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   positions->tensor<T, 2>().setConstant(0.0f);
 
   nij_max = 0;
-  for (ii = 0; ii < inum; ii++) {
+  for (ii = 0; ii < nlocal; ii++) {
     i = ilist[ii];
     nij_max += numneigh[i];
   }
-  nij_max = static_cast<int>(nij_max * neigh_coef);
+  nij_max = static_cast<int>(nij_max * MIN(neigh_coef, 1.0));
   ivec = new int[nij_max];
   jvec = new int[nij_max];
   for (nij = 0; nij < nij_max; nij++) {
@@ -282,14 +308,16 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   auto rmap_ = rmap->tensor<int32, 2>();
   rmap_.setConstant(0);
 
-  for (ii = 0; ii < inum; ii++) {
+  for (ii = 0; ii < nlocal; ii++) {
     i = ilist[ii];
+    i &= NEIGHMASK;
     itype = itypes[i];
     jlist = firstneigh[i];
     jnum = numneigh[i];
 
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
+      j &= NEIGHMASK;
 
       rijx = x[j][0] - x[i][0];
       rijy = x[j][1] - x[i][1];
@@ -368,36 +396,78 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
     }
   }
 
-  auto dEdrij =
-      outputs[graph_model->get_index_partial_forces(false)].matrix<T>();
-  for (nij = 0; nij < nij_max; nij++) {
-    double rij = rdists_(0, nij);
-    if (std::abs(rij) < 1e-6) {
-      fx = 0;
-      fy = 0;
-      fz = 0;
-    } else {
-      rijx = rdists_(1, nij);
-      rijy = rdists_(2, nij);
-      rijz = rdists_(3, nij);
-      fx = dEdrij(0, nij) * rijx / rij + dEdrij(1, nij);
-      fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
-      fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
+  if (f) {
+    auto dEdrij =
+        outputs[graph_model->get_index_partial_forces(false)].matrix<T>();
+    for (nij = 0; nij < nij_max; nij++) {
+      double rij = rdists_(0, nij);
+      if (std::abs(rij) < 1e-6) {
+        rijx = 0;
+        rijy = 0;
+        rijz = 0;
+        fx = 0;
+        fy = 0;
+        fz = 0;
+      } else {
+        rijx = rdists_(1, nij);
+        rijy = rdists_(2, nij);
+        rijz = rdists_(3, nij);
+        fx = dEdrij(0, nij) * rijx / rij + dEdrij(1, nij);
+        fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
+        fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
+      }
+      i = ivec[nij];
+      j = jvec[nij];
+      f[i][0] += fx;
+      f[i][1] += fy;
+      f[i][2] += fz;
+      f[j][0] -= fx;
+      f[j][1] -= fy;
+      f[j][2] -= fz;
+      if (virial) {
+        v[0] = rijx * fx;
+        v[1] = rijy * fy;
+        v[2] = rijz * fz;
+        v[3] = rijx * fy;
+        v[4] = rijx * fz;
+        v[5] = rijy * fz;
+
+        virial[0] += v[0];
+        virial[1] += v[1];
+        virial[2] += v[2];
+        virial[3] += v[3];
+        virial[4] += v[4];
+        virial[5] += v[5];
+
+        if (vatom) {
+          if (i < nlocal) {
+            vatom[i][0] += 0.5 * v[0];
+            vatom[i][1] += 0.5 * v[1];
+            vatom[i][2] += 0.5 * v[2];
+            vatom[i][3] += 0.5 * v[3];
+            vatom[i][4] += 0.5 * v[4];
+            vatom[i][5] += 0.5 * v[5];
+          }
+          if (j < nlocal) {
+            vatom[j][0] += 0.5 * v[0];
+            vatom[j][1] += 0.5 * v[1];
+            vatom[j][2] += 0.5 * v[2];
+            vatom[j][3] += 0.5 * v[3];
+            vatom[j][4] += 0.5 * v[4];
+            vatom[j][5] += 0.5 * v[5];
+          }
+        }
+      }
     }
-    i = ivec[nij];
-    j = jvec[nij];
-    f[i][0] += fx;
-    f[i][1] += fy;
-    f[i][2] += fz;
-    f[j][0] -= fx;
-    f[j][1] -= fy;
-    f[j][2] -= fz;
   }
 
-  auto pe_atom =
-      outputs[graph_model->get_index_variation_energy(true)].flat<T>();
+  auto pe = outputs[graph_model->get_index_variation_energy(true)].flat<T>();
   for (i = 1; i < vap->get_n_atoms_vap(); i++) {
-    pe[vap_to_local_map[i]] = pe_atom(i - 1);
+    double evdwl = pe(i - 1);
+    if (eatom) {
+      eatom[vap_to_local_map[i]] = evdwl;
+    }
+    etotal += evdwl;
   }
 
   delete rmap;
@@ -416,12 +486,14 @@ Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes,
                             const int *ilist, const int *numneigh,
                             int **firstneigh, double **x, double **f,
                             double *eentropy, double etemp, double &etotal,
-                            double *pe) {
+                            double *eatom, double *virial, double **vatom) {
   if (graph_model->is_fp64()) {
     return run<double>(DT_DOUBLE, nlocal, ntypes, itypes, ilist, numneigh,
-                       firstneigh, x, f, eentropy, etemp, etotal, pe);
+                       firstneigh, x, f, eentropy, etemp, etotal, eatom, virial,
+                       vatom);
   } else {
     return run<float>(DT_FLOAT, nlocal, ntypes, itypes, ilist, numneigh,
-                      firstneigh, x, f, eentropy, etemp, etotal, pe);
+                      firstneigh, x, f, eentropy, etemp, etotal, eatom, virial,
+                      vatom);
   }
 }
