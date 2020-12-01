@@ -2,18 +2,19 @@
 #define LIBTENSORALLOY_UTILS_H
 
 #include "tensorflow/core/platform/default/integral_types.h"
+#include <functional>
 
 namespace LIBTENSORALLOY_NS {
 
 typedef tensorflow::int32 smallint;
 typedef tensorflow::int64 bigint;
-typedef void logger(const char *);
+typedef std::function<void (const char *)> logger;
 
 class Memory {
 public:
-  explicit Memory(logger &logfunc) { _logger = &logfunc; };
+  explicit Memory(const logger &logfunc) { _logger = logfunc; };
 
-  logger *_logger;
+  logger _logger;
 
   void *smalloc(bigint n, const char *);
   void *srealloc(void *, bigint n, const char *);

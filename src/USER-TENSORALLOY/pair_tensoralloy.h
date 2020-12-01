@@ -14,9 +14,8 @@ PairStyle(tensoralloy, PairTensorAlloy)
 #include <chrono>
 #include "pair.h"
 #include "atom.h"
-#include "graph_model.h"
-#include "virtual_atom_approach.h"
-#include "tensorflow/core/public/session.h"
+#include "utils.h"
+#include "tensoralloy.h"
 
 namespace LAMMPS_NS {
 
@@ -26,6 +25,7 @@ using tensorflow::int32;
 using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::Tensor;
+using LIBTENSORALLOY_NS::TensorAlloy;
 
 class PairTensorAlloy : public Pair {
 public:
@@ -38,44 +38,21 @@ public:
   void init_style() override;
   double init_one(int, int) override;
   double memory_usage() override;
+  void allocate();
 
   void set_etemp(double new_etemp) { etemp = new_etemp; }
-  double get_etemp() { return etemp; }
+  double get_etemp() const { return etemp; }
 
 protected:
-  GraphModel *graph_model;
+  TensorAlloy *calc;
+
   double cutforcesq, cutmax;
-
-  int32 **ijtypes;
-  int32 **ijnums;
-  VirtualAtomMap *vap;
-
-  template <typename T> double update_cell();
-  template <typename T> void run(int eflag, int vflag, DataType dtype);
-  template <typename T> void allocate(DataType dtype);
-  template <typename T> void update_tensors(DataType dtype);
-
   bool use_hyper_thread;
-
-  // Electron temperature (eV)
   double etemp;
 
-  Tensor *cell;
-  Tensor *positions;
-  Tensor *volume;
-  Tensor *n_atoms_vap_tensor;
-  Tensor *nnl_max;
-  Tensor *pulay_stress;
-  Tensor *etemperature;
-  Tensor *atom_masks;
-  Tensor *row_splits;
-
 private:
-  int num_calls;
-  double nnl_max_sum;
-  double nij_max_sum;
-  double neigh_extra;
-  double elapsed;
+
+  double neigh_extra{};
   double dynamic_bytes;
   double tensors_memory_usage();
 };

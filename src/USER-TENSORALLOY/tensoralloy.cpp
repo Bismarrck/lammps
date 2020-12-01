@@ -10,26 +10,27 @@
 using namespace LIBTENSORALLOY_NS;
 
 using tensorflow::DataType;
-using tensorflow::DT_INT32;
-using tensorflow::DT_FLOAT;
 using tensorflow::DT_DOUBLE;
+using tensorflow::DT_FLOAT;
+using tensorflow::DT_INT32;
 using tensorflow::TensorShape;
 
+/* ----------------------------------------------------------------------
+   Constructor
+------------------------------------------------------------------------- */
 
 TensorAlloy::TensorAlloy(const string &graph_model_path,
-                         const std::vector<string>& symbols,
-                         int nlocal,
-                         int ntypes,
-                         int *itypes,
-                         logger &logfun,
-                         logger &errfun,
-                         bool verbose=false) {
-
+                         const std::vector<string> &symbols, int nlocal,
+                         int ntypes, int *itypes, bool verbose,
+                         const logger& logfun,
+                         const logger& errfun)
+{
   err = errfun;
+  log = logfun;
 
   // Load the graph model
-  graph_model = new GraphModel(logfun, graph_model_path, symbols, errfun,
-                               false, verbose);
+  graph_model =
+      new GraphModel(graph_model_path, symbols, false, verbose, logfun, errfun);
 
   // Initialize the Virtual-Atom Map
   vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
@@ -37,22 +38,67 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
   logfun("VAP initialized\n");
 
   // Allocate arrays and tensors.
-  if (graph_model->is_fp64()) {
-    allocate<double>(DataType::DT_DOUBLE, ntypes);
-  } else {
-    allocate<float>(DataType::DT_FLOAT, ntypes);
-  }
+  allocate(ntypes);
 
   // Set `cutmax`.
   cutmax = graph_model->get_cutoff();
+
+  // Initialize the call statistics
+  call_stats = CallStatistics({0, 0, 0, 0});
+}
+
+/* ----------------------------------------------------------------------
+   Desctructor
+------------------------------------------------------------------------- */
+
+TensorAlloy::~TensorAlloy() {
+  memory->destroy(ijtypes);
+  memory->destroy(ijnums);
+
+  delete positions;
+  positions = nullptr;
+
+  delete cell;
+  cell = nullptr;
+
+  delete volume;
+  volume = nullptr;
+
+  delete n_atoms_vap_tensor;
+  n_atoms_vap_tensor = nullptr;
+
+  delete nnl_max;
+  nnl_max = nullptr;
+
+  delete pulay_stress;
+  pulay_stress = nullptr;
+
+  delete etemperature;
+  etemperature = nullptr;
+
+  delete atom_masks;
+  atom_masks = nullptr;
+
+  delete row_splits;
+  row_splits = nullptr;
+
+  if (vap) {
+    delete vap;
+    vap = nullptr;
+  }
+
+  if (graph_model) {
+    delete graph_model;
+    graph_model = nullptr;
+  }
 }
 
 /* ----------------------------------------------------------------------
    Update tensors. Some may be reallocated.
 ------------------------------------------------------------------------- */
 
-template <typename T> void TensorAlloy::update_tensors(DataType dtype, int ntypes,
-                                 double etemp) {
+template <typename T>
+void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
   int i, j;
   int n = ntypes + 1;
 
@@ -139,7 +185,16 @@ template <typename T> void TensorAlloy::update_tensors(DataType dtype, int ntype
    Allocate arrays
 ------------------------------------------------------------------------- */
 
-template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
+void TensorAlloy::allocate(int ntypes)
+{
+  if (graph_model->is_fp64()) {
+    init<double>(DT_DOUBLE, ntypes);
+  } else {
+    init<float>(DT_FLOAT, ntypes);
+  }
+}
+
+template <typename T> void TensorAlloy::init(DataType dtype, int ntypes) {
   if (vap == nullptr) {
     err("VAP is not succesfully initialized.");
   }
@@ -164,14 +219,15 @@ template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
 }
 
 /* ----------------------------------------------------------------------
-   Allocate arrays
+   Run once
 ------------------------------------------------------------------------- */
 
 template <typename T>
 Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
-                        const int *ilist, const int *jlist, const int *numneigh,
-                        int **firstneigh, double **x, double **f, double *eentropy,
-                        double etemp, double &etotal, double *pe) {
+                        const int *ilist, const int *numneigh,
+                        int **firstneigh, double **x, double **f,
+                        double *eentropy, double etemp, double &etotal,
+                        double *pe) {
   int i, j;
   int ii, jj, inum, jnum, itype, jtype;
   int ijtype;
@@ -181,7 +237,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   double rsq;
   double rijx, rijy, rijz;
   double fx, fy, fz;
-  int *ivec, *jvec;
+  int *ivec, *jvec, *jlist;
   const int32 *local_to_vap_map, *vap_to_local_map;
 
   // Update all tensors if needed.
@@ -298,17 +354,17 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
       std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
           .count());
   if (collect_statistics) {
-    num_calls++;
-    elapsed += ms;
-    nnl_max_sum += DOUBLE(nnl + 1);
-    nij_max_sum += DOUBLE(nij);
+    call_stats.num_calls++;
+    call_stats.elapsed += ms;
+    call_stats.nnl_max += DOUBLE(nnl + 1);
+    call_stats.nij_max += DOUBLE(nij);
   }
 
-  if (graph_model->is_finite_temperature()) {
+  if (graph_model->is_finite_temperature() && eentropy) {
     int idx = graph_model->get_index_eentropy(true);
     auto eentropy_atom = outputs[idx].flat<T>();
     for (i = 1; i < vap->get_n_atoms_vap(); i++) {
-      eentropy[i] = eentropy_atom(i - 1);
+      eentropy[i - 1] = eentropy_atom(i);
     }
   }
 
@@ -356,16 +412,16 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
    compute with different precision
 ------------------------------------------------------------------------- */
 
-template <typename T>
-Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes, const int *ilist,
-                            const int *jlist, const int *numneigh, int **firstneigh,
-                            double **x, double **f, double *eentropy,
-                            double etemp, double &etotal, double *pe) {
+Status TensorAlloy::compute(int nlocal, int ntypes, int *itypes,
+                            const int *ilist, const int *numneigh,
+                            int **firstneigh, double **x, double **f,
+                            double *eentropy, double etemp, double &etotal,
+                            double *pe) {
   if (graph_model->is_fp64()) {
-    return run<double>(DT_DOUBLE, nlocal, ntypes, itypes, ilist, jlist,
-                       numneigh, firstneigh, x, f, eentropy, etemp, etotal, pe);
+    return run<double>(DT_DOUBLE, nlocal, ntypes, itypes, ilist, numneigh,
+                       firstneigh, x, f, eentropy, etemp, etotal, pe);
   } else {
-    return run<float>(DT_FLOAT, nlocal, ntypes, itypes, ilist, jlist, numneigh,
+    return run<float>(DT_FLOAT, nlocal, ntypes, itypes, ilist, numneigh,
                       firstneigh, x, f, eentropy, etemp, etotal, pe);
   }
 }

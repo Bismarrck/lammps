@@ -5,8 +5,8 @@
 #ifndef LIBTENSORALLOY_TENSORALLOY_H
 #define LIBTENSORALLOY_TENSORALLOY_H
 
-#include "tensoralloy_utils.h"
 #include "graph_model.h"
+#include "tensoralloy_utils.h"
 #include "virtual_atom_approach.h"
 #include <string>
 
@@ -16,22 +16,32 @@ using tensorflow::Status;
 
 namespace LIBTENSORALLOY_NS {
 
+struct CallStatistics {
+  double nij_max;
+  double nnl_max;
+  double elapsed;
+  double num_calls;
+};
+
 class TensorAlloy {
 public:
   TensorAlloy(const string &graph_model_path,
-              const std::vector<string>& symbols,
-              int nlocal,
-              int ntypes,
-              int *itypes,
-              logger &logfun,
-              logger &errfun,
-              bool verbose);
+              const std::vector<string> &symbols, int nlocal, int ntypes,
+              int *itypes, bool verbose,
+              const logger& logfun,
+              const logger& errfun);
+  ~TensorAlloy();
 
-  template <typename T>
-  Status compute(int nlocal, int ntypes, int *itypes,
-                 const int *ilist, const int *jlist, const int *numneigh,
-                 int **firstneigh, double **x, double **f, double *eentropy,
-                 double etemp, double &etotal, double *pe);
+  Status compute(int nlocal, int ntypes, int *itypes, const int *ilist,
+                 const int *numneigh, int **firstneigh, double **x, double **f,
+                 double *eentropy, double etemp, double &etotal, double *pe);
+
+  void set_neigh_coef(double val) { neigh_coef = val; }
+
+  CallStatistics get_call_statistics() { return call_stats; }
+
+  GraphModel *get_model() { return graph_model; }
+  VirtualAtomMap *get_vap() { return vap; }
 
 protected:
   GraphModel *graph_model;
@@ -42,16 +52,19 @@ protected:
   double cutforcesq, cutmax;
 
 private:
-  logger *err;
+  logger err;
+  logger log;
 
   template <typename T>
-  Status run(DataType dtype, int nlocal, int ntypes, int *itypes, const int *ilist,
-             const int *jlist, const int *numneigh, int **firstneigh, double **x,
-             double **f, double *eentropy, double etemp, double &etotal, double *pe);
+  Status run(DataType dtype, int nlocal, int ntypes, int *itypes,
+             const int *ilist, const int *numneigh, int **firstneigh,
+             double **x, double **f, double *eentropy, double etemp,
+             double &etotal, double *pe);
 
-  template <typename T> void allocate(DataType dtype, int ntypes);
-  template <typename T> void update_tensors(DataType dtype, int ntypes,
-                                            double etemp);
+  void allocate(int ntypes);
+  template <typename T> void init(DataType dtype, int ntypes);
+  template <typename T>
+  void update_tensors(DataType dtype, int ntypes, double etemp);
 
   Tensor *cell;
   Tensor *positions;
@@ -63,11 +76,8 @@ private:
   Tensor *atom_masks;
   Tensor *row_splits;
 
-  int num_calls;
-  double elapsed;
   bool collect_statistics;
-  double nij_max_sum;
-  double nnl_max_sum;
+  CallStatistics call_stats;
 
   int32 **ijtypes;
   int32 **ijnums;

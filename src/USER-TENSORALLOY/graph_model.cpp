@@ -26,9 +26,9 @@ using tensorflow::Tensor;
    Initialization.
 ------------------------------------------------------------------------- */
 
-GraphModel::GraphModel(logger log, const string &graph_model_path,
-                       const std::vector<string> &symbols, logger err,
-                       bool serial_mode, bool verbose) {
+GraphModel::GraphModel(const string &graph_model_path,
+                       const std::vector<string> &symbols, bool serial_mode,
+                       bool verbose, logger log, logger err) {
   decoded = false;
   filename = graph_model_path;
   rcut = 0.0;

@@ -5,7 +5,7 @@
 #ifndef LIBTENSORALLOY_VAP_H
 #define LIBTENSORALLOY_VAP_H
 
-#include "lmp_utils.h"
+#include "tensoralloy_utils.h"
 #include <iostream>
 #include <tensorflow/core/platform/default/integral_types.h>
 #include <vector>

@@ -12,8 +12,6 @@
 
 namespace LIBTENSORALLOY_NS {
 
-//typedef void logger(const char *message);
-
 using tensorflow::int32;
 using tensorflow::Status;
 using tensorflow::string;
@@ -22,9 +20,9 @@ using tensorflow::Tensor;
 class GraphModel {
 
 public:
-  GraphModel(logger log, const string &graph_model_path,
-             const std::vector<string> &symbols, logger err,
-             bool serial_mode, bool verbose);
+  GraphModel(const string &graph_model_path,
+             const std::vector<string> &symbols, bool serial_mode,
+             bool verbose, logger log, logger err);
 
   ~GraphModel();
 
