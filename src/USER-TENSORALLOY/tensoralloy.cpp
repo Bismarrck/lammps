@@ -62,7 +62,9 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
   // Initialize the Virtual-Atom Map
   vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
   vap->build(nlocal, itypes);
-  logfun("VAP initialized\n");
+  if (verbose) {
+    logfun("VAP initialized\n");
+  }
 
   // Allocate arrays and tensors.
   if (graph_model->is_fp64()) {
