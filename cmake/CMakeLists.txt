@@ -467,7 +467,13 @@ endforeach()
 if(PKG_USER-TENSORALLOY)
   pkg_depends(USER-TENSORALLOY MANYBODY)
 
-  set(TensorflowCC_DIR $ENV{LIBTENSORFLOW_CMAKE_DIR})
+  set(Default_TensorflowCC_DIR "$ENV{CONDA_PREFIX}/libtensorflow/1.15.3-conda/lib/cmake/TensorflowCC")
+  if (EXISTS "${Default_TensorflowCC_DIR}")
+    set(TensorflowCC_DIR ${Default_TensorflowCC_DIR})
+  else()
+    set(TensorflowCC_DIR $ENV{LIBTENSORFLOW_CMAKE_DIR})
+  endif()
+
   find_package(TensorflowCC REQUIRED)
 
   set(USER-TENSORALLOY_SOURCES_DIR ${LAMMPS_SOURCE_DIR}/USER-TENSORALLOY)
