@@ -35,12 +35,8 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
   // Set all internal pointers to null
   ijnums = nullptr;
   ijtypes = nullptr;
-  cell = nullptr;
-  positions = nullptr;
-  volume = nullptr;
   n_atoms_vap_tensor = nullptr;
   nnl_max = nullptr;
-  pulay_stress = nullptr;
   etemperature = nullptr;
   atom_masks = nullptr;
   row_splits = nullptr;
@@ -86,23 +82,11 @@ TensorAlloy::~TensorAlloy() {
   memory->destroy(ijtypes);
   memory->destroy(ijnums);
 
-  delete positions;
-  positions = nullptr;
-
-  delete cell;
-  cell = nullptr;
-
-  delete volume;
-  volume = nullptr;
-
   delete n_atoms_vap_tensor;
   n_atoms_vap_tensor = nullptr;
 
   delete nnl_max;
   nnl_max = nullptr;
-
-  delete pulay_stress;
-  pulay_stress = nullptr;
 
   delete etemperature;
   etemperature = nullptr;
@@ -150,14 +134,6 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
     }
   }
 
-  // Positions
-  if (positions) {
-    delete positions;
-    positions = nullptr;
-  }
-  positions = new Tensor(dtype, TensorShape({n_atoms_vap, 3}));
-  positions->tensor<T, 2>().setConstant(0.f);
-
   // row splits tensor
   if (row_splits) {
     delete row_splits;
@@ -191,27 +167,10 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
     nnl_max = new Tensor(DT_INT32, TensorShape());
   }
 
-  // Pulay stress tensor
-  if (pulay_stress == nullptr) {
-    pulay_stress = new Tensor(dtype, TensorShape());
-    pulay_stress->flat<T>()(0) = 0.0f;
-  }
-
   // electron temperature tensor
   if (etemperature == nullptr) {
     etemperature = new Tensor(dtype, TensorShape());
     etemperature->flat<T>()(0) = etemp;
-  }
-
-  // Volume
-  if (volume == nullptr) {
-    volume = new Tensor(dtype, TensorShape());
-  }
-
-  // Lattice
-  if (cell == nullptr) {
-    cell = new Tensor(dtype, TensorShape({3, 3}));
-    cell->tensor<T, 2>().setConstant(0.f);
   }
 }
 
@@ -272,12 +231,6 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 
   local_to_vap_map = vap->get_local_to_vap_map();
   vap_to_local_map = vap->get_vap_to_local_map();
-
-  // Cell and volume
-  volume->flat<T>()(0) = DOUBLE(1.0);
-
-  // Positions: will be removed later
-  positions->tensor<T, 2>().setConstant(0.0f);
 
   nij_max = 0;
   for (ii = 0; ii < nlocal; ii++) {
@@ -357,13 +310,9 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   nnl_max->flat<int32>()(0) = nnl + 1;
 
   std::vector<std::pair<string, Tensor>> feed_dict({
-      {"Placeholders/positions", *positions},
       {"Placeholders/n_atoms_vap", *n_atoms_vap_tensor},
       {"Placeholders/nnl_max", *nnl_max},
       {"Placeholders/atom_masks", *atom_masks},
-      {"Placeholders/cell", *cell},
-      {"Placeholders/volume", *volume},
-      {"Placeholders/pulay_stress", *pulay_stress},
       {"Placeholders/etemperature", *etemperature},
       {"Placeholders/row_splits", *row_splits},
       {"Placeholders/g2.v2g_map", *rmap},

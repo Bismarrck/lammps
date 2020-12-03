@@ -77,12 +77,8 @@ private:
   template <typename T>
   void update_tensors(DataType dtype, int ntypes, double etemp);
 
-  Tensor *cell;
-  Tensor *positions;
-  Tensor *volume;
   Tensor *n_atoms_vap_tensor;
   Tensor *nnl_max;
-  Tensor *pulay_stress;
   Tensor *etemperature;
   Tensor *atom_masks;
   Tensor *row_splits;
