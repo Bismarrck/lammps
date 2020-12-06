@@ -170,8 +170,8 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
   // electron temperature tensor
   if (etemperature == nullptr) {
     etemperature = new Tensor(dtype, TensorShape());
-    etemperature->flat<T>()(0) = etemp;
   }
+  etemperature->flat<T>()(0) = etemp;
 }
 
 /* ----------------------------------------------------------------------
@@ -308,6 +308,9 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 
   // Set the nnl_max
   nnl_max->flat<int32>()(0) = nnl + 1;
+
+  // Set the electron temperature
+  etemperature->flat<T>()(0) = etemp;
 
   std::vector<std::pair<string, Tensor>> feed_dict({
       {"Placeholders/n_atoms_vap", *n_atoms_vap_tensor},
