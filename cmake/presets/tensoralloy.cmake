@@ -1,7 +1,7 @@
 # preset that turns on just a few, frequently used packages
 # this will be compiled quickly and handle a lot of common inputs.
 
-set(ALL_PACKAGES KSPACE MANYBODY SNAP USER-MISC SHOCK COMPRESS
+set(ALL_PACKAGES MANYBODY SNAP USER-MISC SHOCK COMPRESS MISC PLUMED
     USER-TENSORALLOY)
 
 foreach(PKG ${ALL_PACKAGES})
