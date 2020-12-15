@@ -344,7 +344,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
     int idx = graph_model->get_index_eentropy(true);
     auto satom = outputs[idx].flat<T>();
     for (i = 1; i < vap->get_n_atoms_vap(); i++) {
-      eentropy[vap_to_local_map[i]] = satom(i);
+      eentropy[vap_to_local_map[i]] = satom(i - 1);
     }
   }
 

@@ -112,8 +112,8 @@ void PairTensorAlloy::compute(int eflag, int vflag)
 
   Status status = calc->compute(
       atom->nlocal, atom->ntypes, atom->type, list->ilist, list->numneigh,
-      list->firstneigh, atom->x, atom->f, nullptr, etemp, etotal, eatom, vtotal,
-      vatom);
+      list->firstneigh, atom->x, atom->f, atom->eentropy, etemp, etotal, eatom,
+      vtotal, vatom);
 
   if (eflag) {
     eng_vdwl = etotal;
