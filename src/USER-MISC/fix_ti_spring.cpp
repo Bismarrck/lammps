@@ -108,7 +108,7 @@ FixTISpring::FixTISpring(LAMMPS *lmp, int narg, char **arg) :
       if (narg != 9)
         error->all(FLERR, "Illegal fix ti/spring for function 3: "
                           "lambda/eq should be given");
-      lambda_eq = atof(arg[8]);
+      lambda_eq = 1.0 - atof(arg[8]);
     }
     if ((sf != 1) && ( sf != 2) && (sf != 3))
       error->all(FLERR,"Illegal fix ti/spring switching function");
