@@ -52,7 +52,7 @@ FixTISpring::FixTISpring(LAMMPS *lmp, int narg, char **arg) :
 {
   if (lmp->citeme) lmp->citeme->add(cite_fix_ti_spring);
 
-  if (narg < 6 || narg > 8)
+  if (narg < 6 || narg > 9)
     error->all(FLERR,"Illegal fix ti/spring command");
 
   // Flags.
@@ -100,10 +100,17 @@ FixTISpring::FixTISpring(LAMMPS *lmp, int narg, char **arg) :
 
   // Coupling parameter initialization
   sf = 1;
+  lambda_eq = -1.0;
   if (narg > 6) {
     if (strcmp(arg[6], "function") == 0) sf = force->inumeric(FLERR,arg[7]);
     else error->all(FLERR,"Illegal fix ti/spring switching function");
-    if ((sf!=1) && (sf!=2))
+    if (sf == 3) {
+      if (narg != 9)
+        error->all(FLERR, "Illegal fix ti/spring for function 3: "
+                          "lambda/eq should be given");
+      lambda_eq = atof(arg[8]);
+    }
+    if ((sf != 1) && ( sf != 2) && (sf != 3))
       error->all(FLERR,"Illegal fix ti/spring switching function");
   }
   lambda  =  switch_func(0);
@@ -222,14 +229,18 @@ void FixTISpring::initial_integrate(int /*vflag*/)
   const bigint t = update->ntimestep - (t0+t_equil);
   const double r_switch = 1.0/t_switch;
 
-  if ( (t >= 0) && (t <= t_switch) ) {
-    lambda  =  switch_func(t*r_switch);
-    dlambda = dswitch_func(t*r_switch);
-  }
-
-  if ( (t >= t_equil+t_switch) && (t <= (t_equil+2*t_switch)) ) {
-    lambda  =    switch_func(1.0 - (t - t_switch - t_equil)*r_switch);
-    dlambda = - dswitch_func(1.0 - (t - t_switch - t_equil)*r_switch);
+  if (sf < 3) {
+    if ( (t >= 0) && (t <= t_switch) ) {
+      lambda  =  switch_func(t*r_switch);
+      dlambda = dswitch_func(t*r_switch);
+    }
+    if ( (t >= t_equil+t_switch) && (t <= (t_equil+2*t_switch)) ) {
+      lambda  =    switch_func(1.0 - (t - t_switch - t_equil)*r_switch);
+      dlambda = - dswitch_func(1.0 - (t - t_switch - t_equil)*r_switch);
+    }
+  } else {
+    lambda  = lambda_eq;
+    dlambda = 1.0 / lambda_eq;
   }
 }
 
@@ -367,11 +378,16 @@ int FixTISpring::size_restart(int /*nlocal*/)
 
 double FixTISpring::switch_func(double t)
 {
-  if (sf == 1) return t;
-
-  double t2 = t*t;
-  double t5 = t2*t2*t;
-  return ((70.0*t2*t2 - 315.0*t2*t + 540.0*t2 - 420.0*t + 126.0)*t5);
+  if (sf == 1) {
+    return t;
+  } else if (sf == 3) {
+    return lambda_eq;
+  } else {
+    double t2 = t * t;
+    double t5 = t2 * t2 * t;
+    return ((70.0 * t2 * t2 - 315.0 * t2 * t + 540.0 * t2 - 420.0 * t + 126.0) *
+            t5);
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -380,7 +396,8 @@ double FixTISpring::switch_func(double t)
 
 double FixTISpring::dswitch_func(double t)
 {
-  if(sf == 1) return 1.0/t_switch;
+  if (sf == 1) return 1.0 / t_switch;
+  else if (sf == 3) return 1.0 / lambda_eq;
 
   double t2 = t*t;
   double t4 = t2*t2;

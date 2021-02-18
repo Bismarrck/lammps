@@ -66,6 +66,7 @@ class FixTISpring : public Fix {
   double lambda;      // Coupling parameter.
   double dlambda;     // Lambda variation with t.
   double linfo[2];    // Current lambda status.
+  double lambda_eq;   // Fixed lambda.
   bigint t_switch;    // Total switching steps.
   bigint t_equil;     // Equilibration time.
   bigint t0;          // Initial time.
