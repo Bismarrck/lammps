@@ -35,10 +35,6 @@
 using namespace LAMMPS_NS;
 using fmt::format;
 
-using LIBTENSORALLOY_NS::CallStatistics;
-using LIBTENSORALLOY_NS::GraphModel;
-using LIBTENSORALLOY_NS::VirtualAtomMap;
-
 using tensorflow::DT_FLOAT;
 using tensorflow::DT_INT32;
 using tensorflow::int32;
@@ -203,12 +199,9 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
   allocate();
 
   // Load the graph model
-  auto func1 = [this](const char *msg)->void {utils::logmesg(lmp, msg);};
-  auto func2 = [this](const char *msg)->void {error->all(FLERR,msg);};
-
   bool cpu0 = comm->me == 0;
-  calc = new TensorAlloy(string(arg[0]), symbols, atom->nlocal, atom->ntypes,
-                         atom->type, cpu0, func1, func2);
+  calc = new TensorAlloy(this->lmp, string(arg[0]), symbols, atom->nlocal,
+                         atom->ntypes, atom->type, cpu0);
   if (cpu0) {
     calc->collect_call_statistics();
   }

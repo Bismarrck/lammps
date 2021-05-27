@@ -5,26 +5,28 @@
 #ifndef LIBTENSORLLOY_GRAPH_MODEL_H
 #define LIBTENSORLLOY_GRAPH_MODEL_H
 
-#include "tensoralloy_utils.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/default/integral_types.h"
 #include "tensorflow/core/public/session.h"
+#include "pointers.h"
 
 #define ToInt(x) static_cast<int>(x)
 
-namespace LIBTENSORALLOY_NS {
+namespace LAMMPS_NS {
 
 using tensorflow::int32;
 using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::Tensor;
 
-class GraphModel {
+class GraphModel : Pointers {
 
 public:
-  GraphModel(const string &graph_model_path, const std::vector<string> &symbols,
-             bool serial_mode, bool verbose, const logger &log,
-             const logger &err);
+  GraphModel(class LAMMPS *lmp,
+             const string &graph_model_path,
+             const std::vector<string> &symbols,
+             bool serial_mode,
+             bool verbose);
 
   ~GraphModel();
 

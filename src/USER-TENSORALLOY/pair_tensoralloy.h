@@ -25,7 +25,6 @@ using tensorflow::int32;
 using tensorflow::Status;
 using tensorflow::string;
 using tensorflow::Tensor;
-using LIBTENSORALLOY_NS::TensorAlloy;
 
 class PairTensorAlloy : public Pair {
 public:

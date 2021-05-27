@@ -5,18 +5,18 @@
 #ifndef LIBTENSORALLOY_VAP_H
 #define LIBTENSORALLOY_VAP_H
 
-#include "tensoralloy_utils.h"
+#include "pointers.h"
 #include <iostream>
 #include <tensorflow/core/platform/default/integral_types.h>
 #include <vector>
 
-namespace LIBTENSORALLOY_NS {
+namespace LAMMPS_NS {
 
 using tensorflow::int32;
 
-class VirtualAtomMap {
+class VirtualAtomMap : Pointers {
 public:
-  VirtualAtomMap(Memory *, int);
+  VirtualAtomMap(class LAMMPS *lmp, int);
   ~VirtualAtomMap();
 
   void build(int, const int *);
@@ -41,8 +41,6 @@ protected:
   float *atom_masks;
   int n_elements;
   int *max_occurs;
-
-  Memory *memory;
 
 private:
   int curr_nlocal;

@@ -6,15 +6,15 @@
 #define LIBTENSORALLOY_TENSORALLOY_H
 
 #include "graph_model.h"
-#include "tensoralloy_utils.h"
 #include "virtual_atom_approach.h"
+#include "pointers.h"
 #include <string>
 
 using std::string;
 using tensorflow::DataType;
 using tensorflow::Status;
 
-namespace LIBTENSORALLOY_NS {
+namespace LAMMPS_NS {
 
 struct CallStatistics {
   double nij_max_sum;
@@ -23,13 +23,15 @@ struct CallStatistics {
   double num_calls;
 };
 
-class TensorAlloy {
+class TensorAlloy : Pointers {
 public:
-  TensorAlloy(const string &graph_model_path,
-              const std::vector<string> &symbols, int nlocal, int ntypes,
-              int *itypes, bool verbose,
-              const logger& logfun,
-              const logger& errfun);
+  TensorAlloy(class LAMMPS *lmp,
+              const string &graph_model_path,
+              const std::vector<string> &symbols,
+              int nlocal,
+              int ntypes,
+              int *itypes,
+              bool verbose);
   ~TensorAlloy();
 
   /// @brief Compute total energy (etotal), atomic energy (eatom)
@@ -58,14 +60,11 @@ public:
 protected:
   GraphModel *graph_model;
   VirtualAtomMap *vap;
-  Memory *memory;
 
   double neigh_coef;
   double cutforcesq;
 
 private:
-  logger err;
-  logger log;
 
   template <typename T>
   Status run(DataType dtype, int nlocal, int ntypes, int *itypes,

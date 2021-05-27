@@ -3,6 +3,10 @@
 //
 
 #include <vector>
+#include "comm.h"
+#include "utils.h"
+#include "error.h"
+#include "fmt/format.h"
 
 #define TF_SESS_TRACE 0
 
@@ -10,12 +14,11 @@
 #include <fstream>
 #endif
 
-#include "absl/strings/match.h"
 #include "graph_model.h"
 #include "jsoncpp/json/json.h"
 #include "tensorflow/core/framework/tensor.h"
 
-using namespace LIBTENSORALLOY_NS;
+using namespace LAMMPS_NS;
 
 using tensorflow::int32;
 using tensorflow::Status;
@@ -26,9 +29,9 @@ using tensorflow::Tensor;
    Initialization.
 ------------------------------------------------------------------------- */
 
-GraphModel::GraphModel(const string &graph_model_path,
+GraphModel::GraphModel(LAMMPS *lmp, const string &graph_model_path,
                        const std::vector<string> &symbols, bool serial_mode,
-                       bool verbose, const logger& log, const logger& err) {
+                       bool verbose) : Pointers(lmp) {
   filename = graph_model_path;
   rcut = 0.0;
   acut = 0.0;
@@ -41,52 +44,57 @@ GraphModel::GraphModel(const string &graph_model_path,
 
   Status status = load_graph(graph_model_path, serial_mode);
   if (verbose) {
-    log(("Read" + filename + ": " + status.ToString() + "\n").c_str());
+    if (comm->me == 0) {
+      utils::logmesg(
+          this->lmp, fmt::format("Read {}: {}\n", filename, status.ToString()));
+    }
   }
 
   std::vector<Tensor> outputs;
   status = session->Run({}, {"Transformer/params:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    err(message.c_str());
+    error->all(FLERR, message);
   }
   status = read_transformer_params(outputs[0], filename, symbols);
   if (!status.ok()) {
-    err(status.error_message().c_str());
+    error->all(FLERR, status.error_message());
   }
 
   outputs.clear();
   status = session->Run({}, {"Metadata/precision:0"}, {}, &outputs);
   _fp64 = status.ok() && outputs[0].flat<string>().data()[0] == "high";
   if (verbose) {
+    string msg;
     if (_fp64) {
-      log("Graph model uses float64\n");
+      msg = "Graph model uses float64\n";
     } else {
-      log("Graph model uses float32\n");
+      msg = "Graph model uses float32\n";
     }
+    utils::logmesg(this->lmp, msg);
   }
 
   outputs.clear();
   status = session->Run({}, {"Metadata/is_finite_temperature:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    err(message.c_str());
+    error->all(FLERR, message);
   }
   _is_finite_temperature =
       status.ok() && outputs[0].flat<int32>().data()[0] == 1;
   if (verbose && _is_finite_temperature) {
-    log("This is a finite temperature model\n");
+    utils::logmesg(this->lmp, "This is a finite temperature model\n");
   }
 
   outputs.clear();
   status = session->Run({}, {"Metadata/ops:0"}, {}, &outputs);
   if (!status.ok()) {
     auto message = "Decode graph model error: " + status.ToString();
-    err(message.c_str());
+    error->all(FLERR, message);
   }
   status = read_ops(outputs[0]);
   if (!status.ok()) {
-    err(status.error_message().c_str());
+    error->all(FLERR, status.error_message());
   }
 }
 

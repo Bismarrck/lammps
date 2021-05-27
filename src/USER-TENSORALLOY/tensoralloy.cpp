@@ -3,6 +3,9 @@
 //
 
 #include "tensoralloy.h"
+#include "utils.h"
+#include "memory.h"
+#include "error.h"
 
 #define eV_to_Kelvin 11604.51812
 #define DOUBLE(x) static_cast<double>(x)
@@ -11,7 +14,7 @@
 #define NEIGHMASK 0x3FFFFFFF
 #endif
 
-using namespace LIBTENSORALLOY_NS;
+using namespace LAMMPS_NS;
 
 using tensorflow::DataType;
 using tensorflow::DT_DOUBLE;
@@ -23,10 +26,11 @@ using tensorflow::TensorShape;
    Constructor
 ------------------------------------------------------------------------- */
 
-TensorAlloy::TensorAlloy(const string &graph_model_path,
+TensorAlloy::TensorAlloy(LAMMPS *lmp,
+                         const string &graph_model_path,
                          const std::vector<string> &symbols, int nlocal,
-                         int ntypes, int *itypes, bool verbose,
-                         const logger &logfun, const logger &errfun) {
+                         int ntypes, int *itypes, bool verbose) : Pointers(lmp)
+{
   // Initialize internal variables
   neigh_coef = 1.0;
   cutforcesq = 0.0;
@@ -40,26 +44,18 @@ TensorAlloy::TensorAlloy(const string &graph_model_path,
   etemperature = nullptr;
   atom_masks = nullptr;
   row_splits = nullptr;
-  memory = nullptr;
   graph_model = nullptr;
   vap = nullptr;
 
-  // The external logging functions
-  err = errfun;
-  log = logfun;
-
-  // Initialize a memory pool
-  memory = new Memory(logfun);
-
   // Load the graph model
   graph_model =
-      new GraphModel(graph_model_path, symbols, false, verbose, logfun, errfun);
+      new GraphModel(this->lmp, graph_model_path, symbols, false, verbose);
 
   // Initialize the Virtual-Atom Map
-  vap = new VirtualAtomMap(memory, graph_model->get_n_elements());
+  vap = new VirtualAtomMap(this->lmp, graph_model->get_n_elements());
   vap->build(nlocal, itypes);
   if (verbose) {
-    logfun("VAP initialized\n");
+    utils::logmesg(this->lmp, "VAP initialized\n");
   }
 
   // Allocate arrays and tensors.
@@ -180,7 +176,7 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
 
 template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
   if (vap == nullptr) {
-    err("VAP is not succesfully initialized.");
+    error->all(FLERR, "VAP is not succesfully initialized");
   }
 
   int n = ntypes + 1;
@@ -279,7 +275,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 
       if (rsq < cutforcesq) {
         if (nij == nij_max) {
-          err("tensoralloy: neigh_coef is too small");
+          error->all(FLERR, "tensoralloy: neigh_coef is too small");
         }
 
         jtype = itypes[j];
@@ -323,7 +319,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   });
 
   if (graph_model->is_angular()) {
-    err("Angular part is not implemented yet!");
+    error->all(FLERR, "Angular part is not implemented yet!");
   }
 
   auto begin = std::chrono::high_resolution_clock::now();
