@@ -85,8 +85,14 @@ private:
   bool collect_statistics;
   CallStatistics call_stats{0, 0, 0, 0};
 
-  int32 **ijtypes;
-  int32 **ijnums;
+  int32 **ij_types;
+  int32 **ij_nums;
+
+  int *ij_pairs;
+  Tensor *rdists, *rmap;
+
+  int local_update(const int *ilist, const int *numneigh, int nlocal);
+  template <typename T> int resize(int nij_max, DataType dtype);
 };
 } // namespace LIBTENSORALLOY_NS
 

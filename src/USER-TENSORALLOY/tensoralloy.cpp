@@ -37,8 +37,9 @@ TensorAlloy::TensorAlloy(LAMMPS *lmp,
   collect_statistics = false;
 
   // Set all internal pointers to null
-  ijnums = nullptr;
-  ijtypes = nullptr;
+  ij_nums = nullptr;
+  ij_types = nullptr;
+  ij_pairs = nullptr;
   n_atoms_vap_tensor = nullptr;
   nnl_max = nullptr;
   etemperature = nullptr;
@@ -46,6 +47,8 @@ TensorAlloy::TensorAlloy(LAMMPS *lmp,
   row_splits = nullptr;
   graph_model = nullptr;
   vap = nullptr;
+  rdists = nullptr;
+  rmap = nullptr;
 
   // Load the graph model
   graph_model =
@@ -75,8 +78,8 @@ TensorAlloy::TensorAlloy(LAMMPS *lmp,
 ------------------------------------------------------------------------- */
 
 TensorAlloy::~TensorAlloy() {
-  memory->destroy(ijtypes);
-  memory->destroy(ijnums);
+  memory->destroy(ij_types);
+  memory->destroy(ij_nums);
 
   delete n_atoms_vap_tensor;
   n_atoms_vap_tensor = nullptr;
@@ -123,10 +126,10 @@ void TensorAlloy::update_tensors(DataType dtype, int ntypes, double etemp) {
   int n_atoms_vap = vap->get_n_atoms_vap();
 
   // Radial interaction counters
-  memory->grow(ijnums, n_atoms_vap, n, "pair:tensoralloy:ijnums");
+  memory->grow(ij_nums, n_atoms_vap, n, "pair:tensoralloy:ijnums");
   for (i = 0; i < n_atoms_vap; i++) {
     for (j = 0; j < n; j++) {
-      ijnums[i][j] = 0;
+      ij_nums[i][j] = 0;
     }
   }
 
@@ -183,19 +186,65 @@ template <typename T> void TensorAlloy::allocate(DataType dtype, int ntypes) {
   int i, j;
 
   // Radial interactions
-  memory->create(ijtypes, n, n, "libtensoralloy:ijtypes");
+  memory->create(ij_types, n, n, "libtensoralloy:ijtypes");
   for (i = 1; i < n; i++) {
-    ijtypes[i][i] = 0;
+    ij_types[i][i] = 0;
     int val = 1;
     for (j = 1; j < n; j++) {
       if (j != i) {
-        ijtypes[i][j] = val;
+        ij_types[i][j] = val;
         val++;
       }
     }
   }
 
   update_tensors<T>(dtype, ntypes, 0.0);
+}
+
+/* ----------------------------------------------------------------------
+   Update `curr_nij_max` and `ij_pairs`.
+------------------------------------------------------------------------- */
+
+int TensorAlloy::local_update(const int *ilist, const int *numneigh, int nlocal)
+{
+  int nij_max = 0;
+  for (int ii = 0; ii < nlocal; ii++) {
+    nij_max += numneigh[ilist[ii]];
+  }
+  nij_max = static_cast<int>(nij_max * MIN(neigh_coef, 1.0));
+  memory->create(ij_pairs, nij_max * 2, "libtensoralloy:ij_pairs");
+  return nij_max;
+}
+
+template <typename T> int TensorAlloy::resize(int nij_max, DataType dtype)
+{
+  int new_nij_max = nij_max + 100;
+  memory->grow(ij_pairs, new_nij_max * 2, "libtensoralloy:ij_pairs");
+
+  Tensor *tensor;
+  bigint bytes;
+
+  tensor = new Tensor(dtype, {4, new_nij_max});
+  bytes = nij_max * sizeof(T);
+  for (int axis = 0; axis < 4; axis ++) {
+    int dst_i0 = axis * new_nij_max;
+    int src_i0 = axis * nij_max;
+    T *dst = tensor->tensor<T, 2>().data();
+    T *src = rdists->tensor<T, 2>().data();
+    memcpy(&dst[dst_i0], &src[src_i0], bytes);
+  }
+  delete rdists;
+  rdists = tensor;
+
+  tensor = new Tensor(dtype, {new_nij_max, 5});
+  bytes = nij_max * sizeof(T) * 5;
+  T *dst = tensor->tensor<T, 2>().data();
+  T *src = rmap->tensor<T, 2>().data();
+  memcpy(dst, src, bytes);
+  delete rmap;
+  rmap = tensor;
+
+  return new_nij_max;
 }
 
 /* ----------------------------------------------------------------------
@@ -208,16 +257,11 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
                         double **x, double **f, double *eentropy, double etemp,
                         double &etotal, double *eatom, double *virial,
                         double **vatom) {
-  int i, j;
-  int ii, jj, jnum, itype, jtype;
-  int ijtype;
-  int nij, nij_max;
-  int nnl = 0;
+  int i, j, ii, jj, jnum, itype, jtype;
+  int ijtype, nij, nnl, nij_max;
   int inc;
-  double rsq;
-  double rijx, rijy, rijz;
-  double fx, fy, fz;
-  int *ivec, *jvec, *jlist;
+  double rsq, rijx, rijy, rijz, fx, fy, fz;
+  int *jlist;
   double v[6] = {0, 0, 0, 0, 0, 0};
   const int32 *local_to_vap_map, *vap_to_local_map;
 
@@ -228,32 +272,21 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
   local_to_vap_map = vap->get_local_to_vap_map();
   vap_to_local_map = vap->get_vap_to_local_map();
 
-  nij_max = 0;
-  for (ii = 0; ii < nlocal; ii++) {
-    i = ilist[ii];
-    nij_max += numneigh[i];
-  }
-  nij_max = static_cast<int>(nij_max * MIN(neigh_coef, 1.0));
-  ivec = new int[nij_max];
-  jvec = new int[nij_max];
-  for (nij = 0; nij < nij_max; nij++) {
-    ivec[nij] = 0;
-    jvec[nij] = 0;
-  }
-  nij = 0;
+  nij_max = local_update(ilist, numneigh, nlocal);
+  nij = nnl = 0;
 
   // Reset the counters
   for (i = 0; i < vap->get_n_atoms_vap(); i++) {
     for (j = 0; j < ntypes + 1; j++) {
-      ijnums[i][j] = 0;
+      ij_nums[i][j] = 0;
     }
   }
 
-  auto rdists = new Tensor(dtype, TensorShape({4, nij_max}));
+  rdists = new Tensor(dtype, TensorShape({4, nij_max}));
   auto rdists_ = rdists->tensor<T, 2>();
   rdists_.setConstant(0.0);
 
-  auto rmap = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
+  rmap = new Tensor(DT_INT32, TensorShape({nij_max, 5}));
   auto rmap_ = rmap->tensor<int32, 2>();
   rmap_.setConstant(0);
 
@@ -275,7 +308,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 
       if (rsq < cutforcesq) {
         if (nij == nij_max) {
-          error->all(FLERR, "tensoralloy: neigh_coef is too small");
+          nij_max = resize<T>(nij_max, dtype);
         }
 
         jtype = itypes[j];
@@ -284,11 +317,11 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
         rdists_(1, nij) = DOUBLE(rijx);
         rdists_(2, nij) = DOUBLE(rijy);
         rdists_(3, nij) = DOUBLE(rijz);
-        ivec[nij] = i;
-        jvec[nij] = j;
+        ij_pairs[nij * 2 + 0] = i;
+        ij_pairs[nij * 2 + 1] = j;
 
-        ijtype = ijtypes[itype][jtype];
-        inc = ijnums[local_to_vap_map[i]][ijtype];
+        ijtype = ij_types[itype][jtype];
+        inc = ij_nums[local_to_vap_map[i]][ijtype];
         nnl = MAX(inc + 1, nnl);
 
         rmap_(nij, 0) = ijtype;
@@ -297,10 +330,13 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
         rmap_(nij, 3) = 0;
         rmap_(nij, 4) = 1;
         nij += 1;
-        ijnums[local_to_vap_map[i]][ijtype] += 1;
+        ij_nums[local_to_vap_map[i]][ijtype] += 1;
       }
     }
   }
+
+  // Set `nij_max` to `nij` (the real nij_max)
+  nij_max = nij;
 
   // Set the nnl_max
   nnl_max->flat<int32>()(0) = nnl + 1;
@@ -364,8 +400,8 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
         fy = dEdrij(0, nij) * rijy / rij + dEdrij(2, nij);
         fz = dEdrij(0, nij) * rijz / rij + dEdrij(3, nij);
       }
-      i = ivec[nij];
-      j = jvec[nij];
+      i = ij_pairs[nij * 2 + 0];
+      j = ij_pairs[nij * 2 + 1];
       f[i][0] += fx;
       f[i][1] += fy;
       f[i][2] += fz;
@@ -420,8 +456,7 @@ Status TensorAlloy::run(DataType dtype, int nlocal, int ntypes, int *itypes,
 
   delete rmap;
   delete rdists;
-  delete[] ivec;
-  delete[] jvec;
+  memory->destroy(ij_pairs);
 
   return status;
 }
