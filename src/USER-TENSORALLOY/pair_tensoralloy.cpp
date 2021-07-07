@@ -160,10 +160,21 @@ void PairTensorAlloy::settings(int narg, char ** /*arg*/) {
 ------------------------------------------------------------------------- */
 
 void PairTensorAlloy::coeff(int narg, char **arg) {
+
+  // Skip first one or two `*`
+  int idx = 0;
+  while (idx < narg) {
+    if (strcmp(arg[idx], "*") == 0) {
+      idx ++;
+    }
+    else break;;
+  }
+  const int istart = idx;
+
   // Read atom types from the lammps input file.
   std::vector<string> symbols;
   symbols.emplace_back("X");
-  int idx = 1;
+  idx = istart + 1;
   while (idx < narg) {
     auto iarg = string(arg[idx]);
     if (iarg == "hyper") {
@@ -200,7 +211,7 @@ void PairTensorAlloy::coeff(int narg, char **arg) {
 
   // Load the graph model
   bool cpu0 = comm->me == 0;
-  calc = new TensorAlloy(this->lmp, string(arg[0]), symbols, atom->nlocal,
+  calc = new TensorAlloy(this->lmp, string(arg[istart]), symbols, atom->nlocal,
                          atom->ntypes, atom->type, cpu0);
   if (cpu0) {
     calc->collect_call_statistics();
